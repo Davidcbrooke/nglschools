@@ -141,9 +141,43 @@
   .club-code{font-size:clamp(30px,6vw,40px);font-weight:900;color:var(--schools);letter-spacing:.06em;}
   .qr-box{background:#fff;border-radius:14px;padding:10px;width:170px;justify-self:center;text-align:center;color:var(--navy);font-size:12px;font-weight:800;}
   .qr-box svg{width:150px;height:150px;display:block;}
+
+  /* Invoice */
+  .modal-wide{max-width:760px;}
+  .inv-screen{background:#fff;border-radius:12px;padding:6px;overflow-x:auto;}
+  .inv{-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff;color:#1c1f3a;font-size:13px;line-height:1.45;padding:22px;min-width:560px;}
+  .inv-top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f5d12f;padding-bottom:14px;margin-bottom:16px;}
+  .inv-logo{height:54px;width:auto;}
+  .inv-title{text-align:right;}
+  .inv-h{font-size:26px;font-weight:900;letter-spacing:.08em;color:#2a245f;}
+  .inv-no{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;font-size:15px;}
+  .inv-paid{display:inline-block;margin-top:6px;border:2px solid #1f9d55;color:#1f9d55;font-weight:900;padding:2px 10px;border-radius:6px;transform:rotate(-4deg);}
+  .inv-cols{display:grid;grid-template-columns:1.2fr 1.2fr 1fr;gap:16px;margin-bottom:18px;}
+  .inv-label{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#6b6f8f;margin-bottom:3px;}
+  .inv-table{width:100%;border-collapse:collapse;margin-bottom:18px;}
+  .inv-table th{background:#2a245f;color:#fff;font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:8px 10px;text-align:left;border:0;}
+  .inv-table td{padding:10px;border-bottom:1px solid #e3e4ee;color:#1c1f3a;font-size:13px;}
+  .inv-table .num{text-align:right;}
+  .inv-sub{color:#6b6f8f;font-size:12px;}
+  .inv-total td{font-weight:900;font-size:16px;border-bottom:0;background:#fdf6d3;}
+  .inv-pay{background:#f4f5fa;border-left:4px solid #f5d12f;padding:12px 14px;border-radius:6px;}
+  .inv-pay table{border-collapse:collapse;margin:6px 0 8px;}
+  .inv-pay td{padding:3px 18px 3px 0;border:0;font-size:13px;color:#1c1f3a;}
+  .inv-pay p{margin:0;font-size:12px;color:#4a4e6d;}
+  .inv-ref{font-family:ui-monospace,Menlo,Consolas,monospace;background:#fdf6d3;padding:1px 6px;border-radius:4px;}
+  .inv-foot{margin-top:18px;text-align:center;font-size:11px;color:#6b6f8f;}
+  #print-area{display:none;}
+  @media print{
+    @page{size:A4;margin:12mm;}
+    body{background:#fff !important;}
+    .app, .modal-bg{display:none !important;}
+    #print-area{display:block;}
+    #print-area .inv{min-width:0;padding:0;}
+  }
 </style>
 </head>
 <body>
+<div id="print-area"></div>
 <div class="app">
   <header class="topbar"><div class="topbar-strap">School Awards Scheme · Club Hub</div><div class="topbar-in">
     <div class="wrap topbar-row">
@@ -2478,12 +2512,18 @@ const FIREBASE_CONFIG = {
 /* Links — update when the Hub moves to its own subdomain / shop product exists */
 const PARENT_HUB_URL = 'https://nglschools.co.uk/';
 const SHOP_URL = 'https://www.nationalgymnasticsleague.co.uk/shop';
-const LICENCE_PRODUCT_URL = {           // Squarespace product variants, one per band
-  25: 'https://www.nationalgymnasticsleague.co.uk/shop',
-  22: 'https://www.nationalgymnasticsleague.co.uk/shop',
-  20: 'https://www.nationalgymnasticsleague.co.uk/shop'
+const CONTACT_EMAIL = 'admin@nationalgymnasticsleague.co.uk';
+
+const LOGO_SRC = document.querySelector('.ngl-logo') ? document.querySelector('.ngl-logo').src : '';
+/* Invoice details — edit here */
+const INVOICE = {
+  businessName: 'National Gymnastics League',
+  addressLines: ['66 Waveney Road', 'Harpenden', 'Hertfordshire', 'AL5 4QZ'],
+  email: CONTACT_EMAIL,
+  termsDays: 14,
+  vatNote: '',                       // e.g. 'VAT @ 20% included' once VAT registered
+  bank: { accountName: 'National Gymnastics League', sortCode: '60-84-64', accountNumber: '93416867' }
 };
-const CONTACT_EMAIL = 'bookingoffice@saadigymnastics.co.uk';
 
 /* ---------- Pricing rules ---------- */
 const BANDS = [
@@ -2655,7 +2695,7 @@ const liveApi = {
     const id = orderRef();
     const o = {clubId:S.uid, clubName:S.club.name, schoolId, schoolName:school ? school.name : '', qty, price, season:S.season, status:'awaiting-payment'};
     await fs.setDoc(fs.doc(D, 'orders', id), {...o, createdAt:fs.serverTimestamp()});
-    const local = {id, ...o}; S.orders.push(local); return local;
+    const local = {id, ...o, createdAt:new Date()}; S.orders.push(local); return local;
   },
   async newCode(){
     const {fs, D} = await fb();
@@ -2709,7 +2749,7 @@ const demoApi = {
   async orderLicences(schoolId, qty){
     const price = currentPrice() ?? bandFor(qty).price;
     const school = S.schools.find(s => s.id === schoolId);
-    const o = {id:orderRef(), clubId:'demo', clubName:S.club.name, schoolId, schoolName:school ? school.name : '', qty, price, status:'awaiting-payment', season:S.season};
+    const o = {id:orderRef(), clubId:'demo', clubName:S.club.name, schoolId, schoolName:school ? school.name : '', qty, price, status:'awaiting-payment', season:S.season, createdAt:new Date()};
     S.orders.push(o); return o;
   },
   async newCode(){ S.club.accessCode = newAccessCode(S.club.name); return S.club.accessCode; },
@@ -3022,7 +3062,7 @@ function screenOrders(){
   render(`
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-        <div><h2 style="margin:0 0 4px">Licence orders</h2><p class="muted" style="margin:0">Pay through the NGL shop quoting your order number. NGL confirms payment in the Hub.</p></div>
+        <div><h2 style="margin:0 0 4px">Licence orders</h2><p class="muted" style="margin:0">Each order has an invoice. Pay by bank transfer quoting the order number, and your code is switched on once payment arrives.</p></div>
         <button class="btn small" data-act="order">+ Add licences</button>
       </div>
       <div class="table-wrap" style="margin-top:10px"><table>
@@ -3031,7 +3071,7 @@ function screenOrders(){
           const s = S.schools.find(x => x.id === o.schoolId);
           return `<tr><td class="mono">${o.id}</td><td>${esc(s ? s.name : '')}</td><td class="num">${o.qty}</td><td class="num">${gbp(o.qty*o.price)}</td>
             <td>${o.status==='paid'?'<span class="tag ok">Paid</span>':'<span class="tag wait">Awaiting payment</span>'}</td>
-            <td class="num">${o.status==='paid' ? '' : `<div class="row-actions"><a class="btn small" href="${LICENCE_PRODUCT_URL[o.price]||SHOP_URL}" target="_blank" rel="noopener">Pay now</a></div>`}</td></tr>`;
+            <td class="num"><div class="row-actions"><button class="btn ${o.status==='paid'?'ghost ':''}small" data-act="invoice" data-order="${esc(o.id)}">Invoice</button></div></td></tr>`;
         }).join('') || '<tr><td colspan="6" class="muted">No orders yet.</td></tr>'}</tbody>
       </table></div>
     </div>`);
@@ -3097,10 +3137,17 @@ function orderModal(schoolId){
     try{ o = await api.orderLicences(m.querySelector('#os').value, n); }
     catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; m.querySelector('#osum').insertAdjacentHTML('beforeend','<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
     m.innerHTML = `<div class="modal"><h2>Order ${o.id} placed</h2>
-      <p class="muted">${n} licences · ${gbp(n*o.price)}. Pay through the NGL shop quoting <b class="mono">${o.id}</b>. The licences count towards your total straight away.</p>
-      <div class="btn-row"><a class="btn" href="${LICENCE_PRODUCT_URL[o.price]||SHOP_URL}" target="_blank" rel="noopener">Pay now</a>
+      <p class="muted">${n} licences · ${gbp(n*o.price)}. Your invoice is ready: pay by bank transfer within ${INVOICE.termsDays} days quoting <b class="mono">${o.id}</b>. The licences count towards your total straight away.</p>
+      <div class="btn-row"><button class="btn" data-act="invoice" data-order="${esc(o.id)}">View invoice</button>
       <button class="btn ghost" data-close>Done</button></div></div>`;
+    m.querySelector('.modal').insertAdjacentHTML('beforeend', `<p class="note" id="mailNote" style="margin:12px 0 0">${FIREBASE_CONFIG ? 'Emailing your invoice to ' + esc(S.club.email || '') + '…' : 'Preview mode: no email sent.'}</p>`);
     m.querySelector('[data-close]').addEventListener('click', () => { m.remove(); show(); });
+    m.querySelector('[data-act="invoice"]').addEventListener('click', () => { m.remove(); show(); });
+    if(FIREBASE_CONFIG){
+      emailInvoice(o, S.club)
+        .then(() => { const n = document.getElementById('mailNote'); if(n){ n.style.color = 'var(--ok)'; n.textContent = '✓ Invoice emailed to ' + S.club.email + '.'; } })
+        .catch(err => { console.error(err); const n = document.getElementById('mailNote'); if(n) n.textContent = 'We couldn’t email the invoice just now, but you can view and download it here or from your Orders tab.'; });
+    }
   });
 }
 
@@ -3136,7 +3183,7 @@ async function screenAdmin(){
     const warn = band && band !== o.price ? ` <span class="tag wait" title="Club band is ${gbp(band)}">Band is ${gbp(band)}</span>` : '';
     return `<tr><td class="mono">${esc(o.id)}</td><td>${esc(o.clubName||c.name||'')}<div class="note">${esc(o.schoolName||'')}</div></td>
       <td class="num">${o.qty}</td><td class="num">${gbp(o.price)}${warn}</td><td class="num"><b>${gbp(o.qty*o.price)}</b></td>
-      <td class="num">${o.status==='paid' ? '<span class="tag ok">Paid</span>' : `<button class="btn small" data-act="adm-paid" data-order="${esc(o.id)}">Mark paid</button>`}</td></tr>`;
+      <td class="num"><div class="row-actions"><button class="btn ghost small" data-act="adm-invoice" data-order="${esc(o.id)}">Invoice</button>${o.status==='paid' ? '<span class="tag ok">Paid</span>' : `<button class="btn small" data-act="adm-paid" data-order="${esc(o.id)}">Mark paid</button>`}</div></td></tr>`;
   };
   render(`
     <div class="card">
@@ -3172,6 +3219,131 @@ async function screenAdmin(){
     </div>`);
 }
 
+/* ---------- Invoices (bank transfer to NGL's Wise account) ---------- */
+function orderDate(o){
+  const c = o.createdAt;
+  if(!c) return new Date();
+  if(typeof c.toDate === 'function') return c.toDate();
+  if(c.seconds) return new Date(c.seconds * 1000);
+  return new Date(c);
+}
+const fmtDate = d => d.toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'});
+function invoiceHTML(o, club){
+  const issued = orderDate(o);
+  const due = new Date(issued.getTime() + INVOICE.termsDays * 86400000);
+  const total = o.qty * o.price;
+  const paid = o.status === 'paid';
+  return `
+  <div class="inv">
+    <div class="inv-top">
+      <img src="${LOGO_SRC}" alt="NGL Schools" class="inv-logo">
+      <div class="inv-title"><div class="inv-h">INVOICE</div><div class="inv-no">${esc(o.id)}</div>${paid ? '<div class="inv-paid">PAID</div>' : ''}</div>
+    </div>
+    <div class="inv-cols">
+      <div><div class="inv-label">From</div>
+        <b>${esc(INVOICE.businessName)}</b><br>${INVOICE.addressLines.map(esc).join('<br>')}<br>${esc(INVOICE.email)}</div>
+      <div><div class="inv-label">Bill to</div>
+        <b>${esc(club.name || o.clubName || '')}</b><br>${club.contact ? esc(club.contact) + '<br>' : ''}${club.email ? esc(club.email) + '<br>' : ''}${club.bgNumber ? 'BG club no. ' + esc(club.bgNumber) : ''}</div>
+      <div><div class="inv-label">Invoice date</div>${fmtDate(issued)}
+        <div class="inv-label" style="margin-top:10px">Payment due</div>${fmtDate(due)}</div>
+    </div>
+    <table class="inv-table">
+      <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
+      <tbody><tr>
+        <td>NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year<br><span class="inv-sub">${esc(o.schoolName || '')}</span></td>
+        <td class="num">${o.qty}</td><td class="num">${gbp(o.price)}</td><td class="num">${gbp(total)}</td>
+      </tr></tbody>
+      <tfoot>
+        ${INVOICE.vatNote ? `<tr><td colspan="3" class="num">${esc(INVOICE.vatNote)}</td><td></td></tr>` : ''}
+        <tr class="inv-total"><td colspan="3" class="num">Total due</td><td class="num">${gbp(total)}</td></tr>
+      </tfoot>
+    </table>
+    <div class="inv-pay">
+      <div class="inv-label">How to pay: bank transfer</div>
+      <table>
+        <tr><td>Account name</td><td><b>${esc(INVOICE.bank.accountName)}</b></td></tr>
+        <tr><td>Sort code</td><td><b>${esc(INVOICE.bank.sortCode)}</b></td></tr>
+        <tr><td>Account number</td><td><b>${esc(INVOICE.bank.accountNumber)}</b></td></tr>
+        <tr><td>Payment reference</td><td><b class="inv-ref">${esc(o.id)}</b></td></tr>
+      </table>
+      <p>Please use the payment reference exactly as shown so we can match your payment. Your club’s NGL Schools Hub code is switched on as soon as payment is received.</p>
+    </div>
+    <div class="inv-foot">${esc(INVOICE.businessName)} · ${esc(INVOICE.email)} · nglschools.co.uk</div>
+  </div>`;
+}
+/* ---------- Invoice emails (EmailJS, sent from admin@nationalgymnasticsleague.co.uk; Bcc to NGL set in the template) ---------- */
+const EMAILJS = { serviceId:'service_3qlufgh', templateId:'template_8i40iia', publicKey:'ZSjEpECoOMHkWNB1D' };
+const SITE_URL = 'https://nglschools.co.uk';
+function invoiceEmailHTML(o, club){
+  const issued = orderDate(o);
+  const due = new Date(issued.getTime() + INVOICE.termsDays * 86400000);
+  const total = o.qty * o.price;
+  const td = 'padding:6px 16px 6px 0;font-size:14px;color:#1c1f3a;';
+  return `<div style="font-family:Arial,Helvetica,sans-serif;background:#f4f5fa;padding:20px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;">
+<tr><td style="background:#f5d12f;padding:8px 24px;text-align:center;font-size:13px;font-weight:bold;color:#2a245f;">School Awards Scheme · Club Hub</td></tr>
+<tr><td style="background:#2a245f;padding:18px 24px;"><img src="${SITE_URL}/icons/logo-email.png" alt="NGL Schools" width="180" style="display:block;border:0;"></td></tr>
+<tr><td style="padding:24px;">
+<p style="margin:0 0 14px;font-size:15px;color:#1c1f3a;">Hello${club.contact ? ' ' + esc(club.contact.split(' ')[0]) : ''},</p>
+<p style="margin:0 0 18px;font-size:15px;color:#1c1f3a;">Thank you for your NGL Schools licence order. Your invoice is below.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:3px solid #f5d12f;padding-top:12px;margin-bottom:16px;">
+<tr><td style="font-size:22px;font-weight:bold;color:#2a245f;letter-spacing:2px;">INVOICE</td><td align="right" style="font-family:Consolas,Menlo,monospace;font-size:15px;font-weight:bold;color:#1c1f3a;">${esc(o.id)}</td></tr>
+</table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:18px;font-size:13px;color:#1c1f3a;">
+<tr valign="top">
+<td width="36%"><div style="font-size:10px;font-weight:bold;letter-spacing:1px;color:#6b6f8f;">FROM</div><b>${esc(INVOICE.businessName)}</b><br>${INVOICE.addressLines.map(esc).join('<br>')}<br>${esc(INVOICE.email)}</td>
+<td width="36%"><div style="font-size:10px;font-weight:bold;letter-spacing:1px;color:#6b6f8f;">BILL TO</div><b>${esc(club.name || o.clubName || '')}</b><br>${club.contact ? esc(club.contact) + '<br>' : ''}${club.email ? esc(club.email) + '<br>' : ''}${club.bgNumber ? 'BG club no. ' + esc(club.bgNumber) : ''}</td>
+<td width="28%"><div style="font-size:10px;font-weight:bold;letter-spacing:1px;color:#6b6f8f;">INVOICE DATE</div>${fmtDate(issued)}<br><br><div style="font-size:10px;font-weight:bold;letter-spacing:1px;color:#6b6f8f;">PAYMENT DUE</div>${fmtDate(due)}</td>
+</tr></table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px;">
+<tr style="background:#2a245f;color:#ffffff;font-size:11px;"><td style="padding:8px 10px;">DESCRIPTION</td><td align="right" style="padding:8px 10px;">QTY</td><td align="right" style="padding:8px 10px;">PRICE</td><td align="right" style="padding:8px 10px;">AMOUNT</td></tr>
+<tr style="font-size:14px;color:#1c1f3a;"><td style="padding:10px;border-bottom:1px solid #e3e4ee;">NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year<br><span style="color:#6b6f8f;font-size:12px;">${esc(o.schoolName || '')}</span></td>
+<td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${o.qty}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(o.price)}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(total)}</td></tr>
+<tr style="background:#fdf6d3;font-size:16px;font-weight:bold;color:#1c1f3a;"><td colspan="3" align="right" style="padding:10px;">Total due</td><td align="right" style="padding:10px;">${gbp(total)}</td></tr>
+</table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5fa;border-left:4px solid #f5d12f;">
+<tr><td style="padding:12px 14px;">
+<div style="font-size:10px;font-weight:bold;letter-spacing:1px;color:#6b6f8f;margin-bottom:6px;">HOW TO PAY: BANK TRANSFER</div>
+<table role="presentation" cellpadding="0" cellspacing="0">
+<tr><td style="${td}">Account name</td><td style="${td}"><b>${esc(INVOICE.bank.accountName)}</b></td></tr>
+<tr><td style="${td}">Sort code</td><td style="${td}"><b>${esc(INVOICE.bank.sortCode)}</b></td></tr>
+<tr><td style="${td}">Account number</td><td style="${td}"><b>${esc(INVOICE.bank.accountNumber)}</b></td></tr>
+<tr><td style="${td}">Payment reference</td><td style="${td}"><b style="font-family:Consolas,Menlo,monospace;background:#fdf6d3;padding:1px 6px;">${esc(o.id)}</b></td></tr>
+</table>
+<p style="margin:8px 0 0;font-size:12px;color:#4a4e6d;">Please use the payment reference exactly as shown so we can match your payment. Your club’s NGL Schools Hub code is switched on as soon as payment is received.</p>
+</td></tr></table>
+<p style="margin:18px 0 0;font-size:13px;color:#4a4e6d;">You can download a PDF copy of this invoice at any time from the Orders tab of your <a href="${SITE_URL}/club/" style="color:#2a245f;font-weight:bold;">NGL Schools Club Hub</a>.</p>
+</td></tr>
+<tr><td style="padding:14px 24px;background:#f4f5fa;text-align:center;font-size:11px;color:#6b6f8f;">${esc(INVOICE.businessName)} · ${esc(INVOICE.email)} · nglschools.co.uk</td></tr>
+</table></div>`;
+}
+async function emailInvoice(o, club){
+  if(!club || !club.email) throw new Error('No email address for this club');
+  const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      service_id: EMAILJS.serviceId, template_id: EMAILJS.templateId, user_id: EMAILJS.publicKey,
+      template_params: {
+        to_email: club.email,
+        to_name: club.contact || club.name || '',
+        subject: `NGL Schools invoice ${o.id} – ${gbp(o.qty * o.price)}`,
+        invoice_html: invoiceEmailHTML(o, club)
+      }
+    })
+  });
+  if(!res.ok) throw new Error('Email failed: ' + res.status + ' ' + (await res.text()));
+}
+
+let CURRENT_INVOICE = null;
+function showInvoice(o, club){
+  document.getElementById('print-area').innerHTML = invoiceHTML(o, club);
+  const m = modal(`<div class="inv-screen">${invoiceHTML(o, club)}</div>
+    <div class="btn-row" style="margin-top:14px"><button class="btn" data-act="print-invoice">Download / print PDF</button><button class="btn ghost" data-act="email-invoice">Email invoice</button><button class="btn ghost" data-close>Close</button></div>
+    <p class="note" id="invMailNote" style="margin:10px 0 0;min-height:1em"></p>`);
+  CURRENT_INVOICE = {o, club};
+  m.querySelector('.modal').classList.add('modal-wide');
+}
+
 /* ---------- Events ---------- */
 document.addEventListener('click', async e => {
   const t = e.target;
@@ -3197,6 +3369,22 @@ document.addEventListener('click', async e => {
     if(!em.trim()){ if(err) err.textContent = 'Type your email above, then tap “Forgotten your password?” again.'; return; }
     const r = await api.resetPassword(em.trim());
     if(err){ err.style.color = r.ok ? 'var(--ok)' : ''; err.textContent = r.ok ? 'If there’s a club account for that email, a reset link is on its way.' : r.reason; }
+  }
+  else if(a === 'invoice'){
+    const o = S.orders.find(x => x.id === act.dataset.order); if(o) showInvoice(o, S.club || {});
+  }
+  else if(a === 'adm-invoice'){
+    const o = ADM.orders.find(x => x.id === act.dataset.order); if(!o) return;
+    showInvoice(o, ADM.clubs.find(x => x.id === o.clubId) || {name:o.clubName});
+  }
+  else if(a === 'print-invoice'){ window.print(); }
+  else if(a === 'email-invoice' && CURRENT_INVOICE){
+    const n = document.getElementById('invMailNote'); const to = CURRENT_INVOICE.club.email;
+    if(!FIREBASE_CONFIG){ if(n) n.textContent = 'Preview mode: no email sent.'; return; }
+    act.disabled = true; if(n){ n.style.color = ''; n.textContent = 'Sending to ' + (to || '') + '…'; }
+    try{ await emailInvoice(CURRENT_INVOICE.o, CURRENT_INVOICE.club); if(n){ n.style.color = 'var(--ok)'; n.textContent = '✓ Emailed to ' + to + ' (copy to NGL).'; } }
+    catch(err){ console.error(err); if(n) n.textContent = 'Couldn’t send the email. Please try again later.'; }
+    act.disabled = false;
   }
   else if(a === 'adm-paid'){
     const o = ADM.orders.find(x => x.id === act.dataset.order); if(!o) return;
