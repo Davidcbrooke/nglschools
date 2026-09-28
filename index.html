@@ -368,7 +368,7 @@ async function checkCode(code){
     if(!snap.exists()) return {ok:false, reason:'We couldn’t find that club code. Please check it with your school or club.'};
     const d = snap.data();
     if(d.status !== 'active') return {ok:false, reason:'This club code isn’t active at the moment. Please check with your club.'};
-    return {ok:true, data:{code, clubName:d.clubName||'', season:d.season||''}};
+    return {ok:true, data:{code, clubId:d.clubId||'', clubName:d.clubName||'', season:d.season||''}};
   }catch(e){
     return {ok:false, reason:'We couldn’t reach the Hub just now. Please check your connection and try again.'};
   }
@@ -591,6 +591,13 @@ function screenGraduation(){
   loadEvents();
 }
 
+function evDateText(ev){
+  if(!ev.date) return '';
+  const d = new Date(ev.date + 'T12:00:00');
+  let s = d.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
+  if(ev.time){ const [h,m] = ev.time.split(':').map(Number); s += ' · ' + ((h % 12) || 12) + (m ? ':' + String(m).padStart(2,'0') : '') + (h < 12 ? 'am' : 'pm'); }
+  return s;
+}
 function eventsHTML(list){
   if(!list.length){
     return `<div class="card empty">
@@ -599,22 +606,46 @@ function eventsHTML(list){
       <p class="muted" style="margin:0">When your club announces a Graduation, the details will appear here.</p>
     </div>`;
   }
-  return list.map(ev => `<div class="card event">
-    <h3>${esc(ev.title||'NGL Schools Graduation')}</h3>
-    <div class="when">${esc(ev.dateText||'')}${ev.venue ? ' · ' + esc(ev.venue) : ''}</div>
+  return list.map(ev => {
+    return `<div class="card event">
+    <h3>${esc(ev.title || 'NGL Schools Graduation')}</h3>
+    <div class="when">${esc(evDateText(ev))}${ev.venue ? '<br>' + esc(ev.venue) : ''}</div>
+    ${ev.schoolName ? `<div class="note" style="margin-bottom:6px">For ${esc(ev.schoolName)} gymnasts</div>` : ''}
     <ul class="facts">
-      ${ev.price ? `<li>${esc(ev.price)} per gymnast</li>` : ''}
+      <li>£10 per gymnast</li>
       <li>Family spectators FREE</li>
       <li>NGL Graduation Medal included</li>
     </ul>
-    ${ev.bookingUrl ? `<a class="btn" style="margin-top:12px" href="${esc(ev.bookingUrl)}" target="_blank" rel="noopener">Book a place</a>` : ''}
-  </div>`).join('');
+    ${ev.notes ? `<p class="muted" style="font-size:14px;margin:10px 0 0">${esc(ev.notes)}</p>` : ''}
+    ${ev.bookingUrl ? `<a class="btn" style="margin-top:12px" href="${esc(ev.bookingUrl)}" target="_blank" rel="noopener">Book a place</a>` : '<p class="note" style="margin:10px 0 0">Ask your club or school how to book a place.</p>'}
+  </div>`;}).join('');
 }
 
 async function loadEvents(){
-  if(!FIREBASE_CONFIG || !session) return;
-  // Phase 1: events published by the gymnast's club (collection `events`, field clubId).
-  // Wired up once the club dashboard creates events.
+  if(!session) return;
+  const box = () => document.getElementById('events');
+  if(!FIREBASE_CONFIG){
+    const d = new Date(); d.setDate(d.getDate() + 60);
+    const demo = [{title:'NGL Schools Graduation', date:d.toISOString().slice(0,10), time:'10:00', venue:session.clubName, price:10, notes:'Arrive 30 minutes early.'}];
+    if(box()) box().innerHTML = eventsHTML(demo);
+    return;
+  }
+  try{
+    await initFirebase();
+    let clubId = session.clubId;
+    if(!clubId){
+      const snap = await db.mod.getDoc(db.mod.doc(db.fs, 'accessCodes', session.code));
+      clubId = snap.exists() ? snap.data().clubId : '';
+      if(clubId){ session.clubId = clubId; store(false, session); }
+    }
+    if(!clubId) return;
+    const q = db.mod.query(db.mod.collection(db.fs, 'events'), db.mod.where('clubId', '==', clubId));
+    const res = await db.mod.getDocs(q);
+    const today = new Date().toISOString().slice(0,10);
+    const list = res.docs.map(d => d.data()).filter(e => (e.date || '') >= today)
+      .sort((a,b) => (a.date + (a.time||'')).localeCompare(b.date + (b.time||'')));
+    if(box()) box().innerHTML = eventsHTML(list);
+  }catch(e){ console.error(e); }
 }
 
 function footHTML(){

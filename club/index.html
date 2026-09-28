@@ -144,6 +144,9 @@
 
   /* Invoice */
   .modal-wide{max-width:760px;}
+  .grad-fee{background:rgba(245,209,47,.1);border:1px solid rgba(245,209,47,.4);border-radius:12px;padding:10px 12px;font-size:14px;margin:0 0 14px;line-height:1.45;}
+  .grad-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--line);}
+  .grad-row:first-of-type{margin-top:8px;}
   .inv-screen{background:#fff;border-radius:12px;padding:6px;overflow-x:auto;}
   .inv{-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff;color:#1c1f3a;font-size:13px;line-height:1.45;padding:22px;min-width:560px;}
   .inv-top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f5d12f;padding-bottom:14px;margin-bottom:16px;}
@@ -2537,7 +2540,7 @@ const EXTRAS = [
   {item:'Awards Book', price:8},
   {item:'Certificate', price:1},
   {item:'NGL Schools Coach T-shirt', price:20},
-  {item:'Graduation place (incl. medal)', price:10}
+  {item:'Graduation medal & place (per graduate)', price:5}
 ];
 const gbp = n => n == null ? 'Agreement' : '£' + n.toLocaleString('en-GB', {minimumFractionDigits: n % 1 ? 2 : 0});
 
@@ -2576,13 +2579,13 @@ function newAccessCode(clubName){
      accessCodes/{CODE}          clubId, clubName, season, status 'active'|'inactive'
      admins/{uid}                (exists = NGL admin)
    ===================================================================== */
-const S = {season: currentSeason(), uid:null, isAdmin:false, club:null, schools:[], orders:[]};
+const S = {season: currentSeason(), uid:null, isAdmin:false, club:null, schools:[], orders:[], events:[]};
 
 // Price for this school year: fixed band if NGL has set it, otherwise last
 // year's total decides it, otherwise the first order does (null here).
 function lastYearTotal(){
   const prev = (+S.season.slice(0,4) - 1) + '/' + S.season.slice(2,4);
-  return S.orders.filter(o => o.season === prev).reduce((a,o) => a + o.qty, 0);
+  return S.orders.filter(o => o.season === prev && (o.type || 'licence') === 'licence').reduce((a,o) => a + o.qty, 0);
 }
 function currentPrice(){
   const fixed = S.club && S.club.bands && S.club.bands[S.season];
@@ -2622,12 +2625,14 @@ async function fb(){
 async function loadClubData(uid){
   const {fs, D} = await fb();
   S.uid = uid;
-  const [clubSnap, adminSnap, schoolsSnap, ordersSnap] = await Promise.all([
+  const [clubSnap, adminSnap, schoolsSnap, ordersSnap, eventsSnap] = await Promise.all([
     fs.getDoc(fs.doc(D, 'clubs', uid)),
     fs.getDoc(fs.doc(D, 'admins', uid)).catch(() => null),
     fs.getDocs(fs.collection(D, 'clubs', uid, 'schools')),
-    fs.getDocs(fs.query(fs.collection(D, 'orders'), fs.where('clubId', '==', uid)))
+    fs.getDocs(fs.query(fs.collection(D, 'orders'), fs.where('clubId', '==', uid))),
+    fs.getDocs(fs.query(fs.collection(D, 'events'), fs.where('clubId', '==', uid))).catch(() => ({docs:[]}))
   ]);
+  S.events = eventsSnap.docs.map(d => ({id:d.id, ...d.data()}));
   S.club = clubSnap.exists() ? {bands:{}, ...clubSnap.data()} : null;
   S.isAdmin = !!(adminSnap && adminSnap.exists());
   S.schools = schoolsSnap.docs.map(d => ({id:d.id, ...d.data()})).sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
@@ -2698,6 +2703,14 @@ const liveApi = {
     await fs.setDoc(fs.doc(D, 'orders', id), {...o, createdAt:fs.serverTimestamp()});
     const local = {id, ...o, createdAt:new Date()}; S.orders.push(local); return local;
   },
+  async orderGraduation(ev, qty){
+    const {fs, D} = await fb();
+    const id = orderRef();
+    const o = {type:'graduation', clubId:S.uid, clubName:S.club.name, eventId:ev.id, eventTitle:ev.title || 'NGL Schools Graduation', eventDate:ev.date || '',
+               schoolId:ev.schoolId || '', schoolName:'Graduation ' + evDateShort(ev), qty, price:GRAD_NGL_FEE, season:S.season, status:'awaiting-payment'};
+    await fs.setDoc(fs.doc(D, 'orders', id), {...o, createdAt:fs.serverTimestamp()});
+    const local = {id, ...o, createdAt:new Date()}; S.orders.push(local); return local;
+  },
   async newCode(){
     const {fs, D} = await fb();
     const old = S.club.accessCode;
@@ -2705,6 +2718,17 @@ const liveApi = {
     await fs.updateDoc(fs.doc(D, 'clubs', S.uid), {accessCode:code});
     if(old) await fs.deleteDoc(fs.doc(D, 'accessCodes', old)).catch(() => {});
     S.club.accessCode = code; return code;
+  },
+  async saveEvent(id, d){
+    const {fs, D} = await fb();
+    const data = {...d, clubId:S.uid, clubName:S.club.name, updatedAt:fs.serverTimestamp()};
+    if(id){ await fs.updateDoc(fs.doc(D, 'events', id), data); Object.assign(S.events.find(e => e.id === id), d); }
+    else { const ref = await fs.addDoc(fs.collection(D, 'events'), {...data, createdAt:fs.serverTimestamp()}); S.events.push({id:ref.id, ...d}); }
+  },
+  async deleteEvent(id){
+    const {fs, D} = await fb();
+    await fs.deleteDoc(fs.doc(D, 'events', id));
+    S.events = S.events.filter(e => e.id !== id);
   },
   async updateClub(d){
     const {fs, D} = await fb();
@@ -2738,6 +2762,7 @@ const liveApi = {
     const {fs, D} = await fb();
     const batch = fs.writeBatch(D);
     batch.update(fs.doc(D, 'orders', order.id), {status:'paid', paidAt:fs.serverTimestamp()});
+    if(!isLicence(order)){ await batch.commit(); return; }   // Graduation medals don't affect band or code
     const clubRef = fs.doc(D, 'clubs', club.id);
     if(club.bands && club.bands[order.season]) batch.update(clubRef, {codeActive:true});
     else batch.update(clubRef, 'codeActive', true, new fs.FieldPath('bands', order.season), order.price);   // first order fixes the band
@@ -2757,13 +2782,13 @@ const demoApi = {
   async signIn(){
     S.club = makeClub('SAADI Gymnastics', 'Dave Brooke', CONTACT_EMAIL);
     S.club.bands[S.season] = 20; S.club.codeActive = true; S.isAdmin = true;
-    S.schools = []; S.orders = [];
+    S.schools = []; S.orders = []; S.events = [];
     [['Brookfield Primary',183],['St Mary’s C of E Primary',126],['Oakwood Junior School',207],['Hillside Infants',94]]
       .forEach(([n,q],i) => { const s = {id:'s'+(i+1), name:n}; S.schools.push(s); S.orders.push({id:'ORD-'+(1001+i), clubId:'demo', clubName:S.club.name, schoolId:s.id, schoolName:n, qty:q, price:20, status:'paid', season:S.season}); });
     return {ok:true};
   },
   async resetPassword(){ return {ok:true}; },
-  async register(d){ S.club = makeClub(d.name, d.contact, d.email); S.isAdmin = false; S.schools = []; S.orders = []; return {ok:true}; },
+  async register(d){ S.club = makeClub(d.name, d.contact, d.email); S.isAdmin = false; S.schools = []; S.orders = []; S.events = []; return {ok:true}; },
   async signOut(){},
   async addSchool(name){ const s = {id:'s' + (S.schools.length + 1), name}; S.schools.push(s); return s; },
   async orderLicences(schoolId, qty){
@@ -2772,12 +2797,20 @@ const demoApi = {
     const o = {id:orderRef(), clubId:'demo', clubName:S.club.name, schoolId, schoolName:school ? school.name : '', qty, price, status:'awaiting-payment', season:S.season, createdAt:new Date()};
     S.orders.push(o); return o;
   },
+  async orderGraduation(ev, qty){
+    const o = {id:orderRef(), type:'graduation', clubId:'demo', clubName:S.club.name, eventId:ev.id, eventTitle:ev.title || 'NGL Schools Graduation', eventDate:ev.date || '',
+               schoolId:ev.schoolId || '', schoolName:'Graduation ' + evDateShort(ev), qty, price:GRAD_NGL_FEE, status:'awaiting-payment', season:S.season, createdAt:new Date()};
+    S.orders.push(o); return o;
+  },
   async newCode(){ S.club.accessCode = newAccessCode(S.club.name); return S.club.accessCode; },
   async updateClub(d){ Object.assign(S.club, d); },
+  async saveEvent(id, d){ if(id) Object.assign(S.events.find(e => e.id === id), d); else S.events.push({id:'ev' + Date.now(), ...d}); },
+  async deleteEvent(id){ S.events = S.events.filter(e => e.id !== id); },
   async adminUpdateClub(club, d, regenerate){ Object.assign(S.club, d); if(regenerate) S.club.accessCode = newAccessCode(S.club.name); },
   async adminLoad(){ return {clubs:[{id:'demo', ...S.club}], orders:S.orders.slice().reverse()}; },
   async adminMarkPaid(order, club){
     const o = S.orders.find(x => x.id === order.id); if(o) o.status = 'paid';
+    if(!isLicence(order)) return;
     S.club.codeActive = true; if(!S.club.bands[order.season]) S.club.bands[order.season] = order.price;
   },
   async adminSetBand(clubId, season, price){ S.club.bands[season] = price; }
@@ -2903,6 +2936,8 @@ function pitchHTML(signedInView){
         <tr><td>Gymnast</td><td class="num">£10</td></tr>
         <tr><td>Parents &amp; family</td><td class="num">FREE</td></tr>
         <tr><td>Exclusive NGL Graduation Medal</td><td class="num">Included</td></tr>
+        ${signedInView ? `<tr><td>NGL charge to your club, per graduate (medal included)</td><td class="num">£${GRAD_NGL_FEE}</td></tr>
+        <tr><td><b>Your club keeps, per graduate</b></td><td class="num"><b>£${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}</b></td></tr>` : ''}
       </tbody></table>
     </div>
   </div>
@@ -2991,7 +3026,7 @@ function screenRegister(){
 }
 
 /* ---------- Signed-in screens ---------- */
-function seasonOrders(){ return S.orders.filter(o => o.season === S.season); }
+function seasonOrders(){ return S.orders.filter(o => o.season === S.season && isLicence(o)); }
 function counts(){
   const O = seasonOrders();
   const active = O.filter(o => o.status === 'paid').reduce((a,o) => a + o.qty, 0);
@@ -3117,12 +3152,8 @@ function screenDashboard(){
         <table><tbody>${EXTRAS.slice(0,3).map(e => `<tr><td>${e.item}</td><td class="num">${gbp(e.price)}</td></tr>`).join('')}</tbody></table>
         <a class="btn ghost small" style="margin-top:12px" href="${SHOP_URL}" target="_blank" rel="noopener">Go to the shop</a>
       </div>
-      <div class="card">
-        <h3>Graduation</h3>
-        <p class="muted">Creating Graduation events and seeing bookings from families will arrive here in a later update.</p>
-        <span class="tag info">Coming soon</span>
-      </div>
     </div>
+    ${graduationsHTML()}
   `);
 }
 
@@ -3245,11 +3276,11 @@ async function screenAdmin(){
   const clubById = Object.fromEntries(ADM.clubs.map(c => [c.id, c]));
   const waiting = ADM.orders.filter(o => o.status !== 'paid');
   const totals = {};
-  ADM.orders.filter(o => o.season === S.season).forEach(o => { totals[o.clubId] = (totals[o.clubId]||0) + o.qty; });
+  ADM.orders.filter(o => o.season === S.season && isLicence(o)).forEach(o => { totals[o.clubId] = (totals[o.clubId]||0) + o.qty; });
   const orderRow = o => {
     const c = clubById[o.clubId] || {};
     const band = c.bands && c.bands[o.season];
-    const warn = band && band !== o.price ? ` <span class="tag wait" title="Club band is ${gbp(band)}">Band is ${gbp(band)}</span>` : '';
+    const warn = isLicence(o) && band && band !== o.price ? ` <span class="tag wait" title="Club band is ${gbp(band)}">Band is ${gbp(band)}</span>` : '';
     return `<tr><td class="mono">${esc(o.id)}</td><td>${esc(o.clubName||c.name||'')}<div class="note">${esc(o.schoolName||'')}</div></td>
       <td class="num">${o.qty}</td><td class="num">${gbp(o.price)}${warn}</td><td class="num"><b>${gbp(o.qty*o.price)}</b></td>
       <td class="num"><div class="row-actions"><button class="btn ghost small" data-act="adm-invoice" data-order="${esc(o.id)}">Invoice</button>${o.status==='paid' ? '<span class="tag ok">Paid</span>' : `<button class="btn small" data-act="adm-paid" data-order="${esc(o.id)}">Mark paid</button>`}</div></td></tr>`;
@@ -3289,6 +3320,99 @@ async function screenAdmin(){
     </div>`);
 }
 
+
+/* ---------- Graduation events ---------- */
+const GRAD_FAMILY_PRICE = 10;   // what families pay the club per gymnast
+const GRAD_NGL_FEE = 5;         // what NGL invoices the club per graduate (medal included)
+const isLicence = o => (o.type || 'licence') === 'licence';
+function evDateText(ev){
+  if(!ev.date) return '';
+  const d = new Date(ev.date + 'T12:00:00');
+  let s = d.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
+  if(ev.time){ const [h,m] = ev.time.split(':').map(Number); s += ' · ' + ((h % 12) || 12) + (m ? ':' + String(m).padStart(2,'0') : '') + (h < 12 ? 'am' : 'pm'); }
+  return s;
+}
+const todayISO = () => new Date().toISOString().slice(0,10);
+function evDateShort(ev){ return ev.date ? new Date(ev.date + 'T12:00:00').toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'}) : ''; }
+function medalsFor(evId){ return S.orders.filter(o => o.type === 'graduation' && o.eventId === evId).reduce((a,o) => a + o.qty, 0); }
+function medalsModal(ev){
+  const already = medalsFor(ev.id);
+  const m = modal(`<h2>Order Graduation medals</h2>
+    <p class="muted">${esc(ev.title || 'NGL Schools Graduation')} · ${esc(evDateText(ev))}</p>
+    <form id="mf">
+      <div class="field"><label for="mq">How many gymnasts are graduating?</label><input class="input" id="mq" type="number" min="1" max="2000" value="20" required></div>
+      ${already ? `<p class="note">You’ve already ordered ${already} medals for this Graduation. Order extra here if more gymnasts have booked.</p>` : ''}
+      <div id="msum"></div>
+      <p class="note">Each graduate’s £${GRAD_FAMILY_PRICE}: your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}, NGL invoices £${GRAD_NGL_FEE} including the medal. Medals are sent once payment is received.</p>
+      <div class="btn-row" style="margin-top:12px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
+    </form>`);
+  const q = m.querySelector('#mq');
+  const upd = () => { const n = Math.max(0, parseInt(q.value || '0', 10));
+    m.querySelector('#msum').innerHTML = `<div class="sum"><span>${n} × ${gbp(GRAD_NGL_FEE)} (medal &amp; place)</span><span></span></div><div class="sum total"><span>Total</span><span>${gbp(n * GRAD_NGL_FEE)}</span></div>`; };
+  q.addEventListener('input', upd); upd();
+  m.querySelector('#mf').addEventListener('submit', async e => {
+    e.preventDefault();
+    const n = parseInt(q.value, 10); if(!(n > 0)) return;
+    const sb = m.querySelector('button[type=submit]'); sb.disabled = true; sb.textContent = 'Placing order…';
+    let o; try{ o = await api.orderGraduation(ev, n); }
+    catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; m.querySelector('#msum').insertAdjacentHTML('beforeend','<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
+    m.remove(); show(); showInvoice(o, S.club);
+    const note = document.getElementById('invMailNote');
+    if(FIREBASE_CONFIG){ if(note) note.textContent = 'Emailing this invoice to ' + (S.club.email || '') + '…';
+      emailInvoice(o, S.club).then(() => { const n2 = document.getElementById('invMailNote'); if(n2){ n2.style.color = 'var(--ok)'; n2.textContent = '✓ Invoice emailed to ' + S.club.email + '.'; } })
+        .catch(err => { console.error(err); const n2 = document.getElementById('invMailNote'); if(n2) n2.textContent = 'We couldn’t email the invoice just now, but you can download it here.'; });
+    }
+  });
+}
+function graduationsHTML(){
+  const up = (S.events || []).filter(e => (e.date || '') >= todayISO()).sort((a,b) => (a.date + (a.time||'')).localeCompare(b.date + (b.time||'')));
+  const past = (S.events || []).filter(e => (e.date || '') < todayISO());
+  return `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <div><h3 style="margin:0 0 4px">Graduations</h3><p class="muted" style="margin:0">Events you add here appear straight away in your families’ Schools Hub.</p></div>
+      <button class="btn small" data-act="add-grad">+ Add Graduation</button>
+    </div>
+    ${up.length ? up.map(ev => `<div class="grad-row">
+        <div><b>${esc(ev.title || 'NGL Schools Graduation')}</b>
+          <div class="muted" style="font-size:14px">${esc(evDateText(ev))}${ev.venue ? ' · ' + esc(ev.venue) : ''}</div>
+          <div class="note">${ev.schoolName ? 'For ' + esc(ev.schoolName) : 'For all your schools'} · Families pay £${GRAD_FAMILY_PRICE} · ${medalsFor(ev.id) ? medalsFor(ev.id) + ' medals ordered' : 'No medals ordered yet'}</div></div>
+        <div class="row-actions"><button class="btn small" data-act="order-medals" data-ev="${esc(ev.id)}">Order medals</button><button class="btn ghost small" data-act="edit-grad" data-ev="${esc(ev.id)}">Edit</button><button class="btn ghost small" data-act="del-grad" data-ev="${esc(ev.id)}">Delete</button></div>
+      </div>`).join('') : '<p class="muted" style="margin:12px 0 0">No upcoming Graduations yet.</p>'}
+    ${past.length ? `<p class="note" style="margin:10px 0 0">${past.length} past Graduation${past.length > 1 ? 's' : ''} no longer shown to families.</p>` : ''}
+  </div>`;
+}
+function gradModal(ev){
+  ev = ev || {};
+  const m = modal(`<h2>${ev.id ? 'Edit Graduation' : 'Add a Graduation'}</h2>
+    <form id="gf">
+      <div class="field"><label for="gt">Event name</label><input class="input" id="gt" value="${esc(ev.title || 'NGL Schools Graduation')}" required></div>
+      <div class="field"><label for="gs">Who is it for?</label><select class="input" id="gs">
+        <option value="">All our schools</option>
+        ${S.schools.map(s => `<option value="${s.id}" ${ev.schoolId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+      </select></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="field"><label for="gd">Date</label><input class="input" id="gd" type="date" value="${esc(ev.date || '')}" min="${todayISO()}" required></div>
+        <div class="field"><label for="gtm">Start time</label><input class="input" id="gtm" type="time" value="${esc(ev.time || '10:00')}"></div>
+      </div>
+      <div class="field"><label for="gv">Venue</label><input class="input" id="gv" value="${esc(ev.venue || S.club.name || '')}" placeholder="e.g. SAADI Gymnastics, Harpenden" required></div>
+      <div class="grad-fee"><b>Families pay £${GRAD_FAMILY_PRICE} per gymnast</b>, and family spectators go free. Your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}; NGL invoices your club £${GRAD_NGL_FEE} per graduate, including the exclusive NGL Graduation Medal.</div>
+      <div class="field"><label for="gb">How families book (optional link)</label><input class="input" id="gb" type="url" value="${esc(ev.bookingUrl || '')}" placeholder="https://… your club’s booking page"></div>
+      <div class="field"><label for="gn">Extra information for families (optional)</label><input class="input" id="gn" value="${esc(ev.notes || '')}" placeholder="e.g. Arrive 30 minutes early, wear your NGL T-shirt"></div>
+      <p class="error" id="gErr"></p>
+      <div class="btn-row"><button class="btn" type="submit">${ev.id ? 'Save changes' : 'Publish Graduation'}</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
+    </form>`);
+  m.querySelector('#gf').addEventListener('submit', async e => {
+    e.preventDefault();
+    const g = id => m.querySelector(id).value.trim();
+    const sid = g('#gs'); const school = S.schools.find(s => s.id === sid);
+    const d = {title:g('#gt'), schoolId:sid, schoolName:school ? school.name : '', date:g('#gd'), time:g('#gtm'), venue:g('#gv'),
+               price: GRAD_FAMILY_PRICE, bookingUrl:g('#gb'), notes:g('#gn')};
+    const btn = m.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+    try{ await api.saveEvent(ev.id, d); m.remove(); show(); }
+    catch(err){ console.error(err); btn.disabled = false; btn.textContent = 'Try again'; m.querySelector('#gErr').textContent = 'Couldn’t save the Graduation. Please try again.'; }
+  });
+}
+
 /* ---------- Invoices (bank transfer to NGL's Wise account) ---------- */
 function orderDate(o){
   const c = o.createdAt;
@@ -3320,7 +3444,7 @@ function invoiceHTML(o, club){
     <table class="inv-table">
       <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
       <tbody><tr>
-        <td>NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year<br><span class="inv-sub">${esc(o.schoolName || '')}</span></td>
+        <td>${isLicence(o) ? `NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year` : `NGL Graduation medal &amp; place: ${esc(o.eventTitle || 'NGL Schools Graduation')}`}<br><span class="inv-sub">${esc(o.schoolName || '')}</span></td>
         <td class="num">${o.qty}</td><td class="num">${gbp(o.price)}</td><td class="num">${gbp(total)}</td>
       </tr></tbody>
       <tfoot>
@@ -3336,7 +3460,7 @@ function invoiceHTML(o, club){
         <tr><td>Account number</td><td><b>${esc(INVOICE.bank.accountNumber)}</b></td></tr>
         <tr><td>Payment reference</td><td><b class="inv-ref">${esc(o.id)}</b></td></tr>
       </table>
-      <p>Please use the payment reference exactly as shown so we can match your payment. Your club’s NGL Schools Hub code is switched on as soon as payment is received.</p>
+      <p>Please use the payment reference exactly as shown so we can match your payment. ${isLicence(o) ? 'Your club’s NGL Schools Hub code is switched on as soon as payment is received.' : 'Your Graduation medals are sent as soon as payment is received.'}</p>
     </div>
     <div class="inv-foot">${esc(INVOICE.businessName)} · ${esc(INVOICE.email)} · nglschools.co.uk</div>
   </div>`;
@@ -3367,7 +3491,7 @@ function invoiceEmailHTML(o, club){
 </tr></table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px;">
 <tr style="background:#2a245f;color:#ffffff;font-size:11px;"><td style="padding:8px 10px;">DESCRIPTION</td><td align="right" style="padding:8px 10px;">QTY</td><td align="right" style="padding:8px 10px;">PRICE</td><td align="right" style="padding:8px 10px;">AMOUNT</td></tr>
-<tr style="font-size:14px;color:#1c1f3a;"><td style="padding:10px;border-bottom:1px solid #e3e4ee;">NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year<br><span style="color:#6b6f8f;font-size:12px;">${esc(o.schoolName || '')}</span></td>
+<tr style="font-size:14px;color:#1c1f3a;"><td style="padding:10px;border-bottom:1px solid #e3e4ee;">${isLicence(o) ? `NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year` : `NGL Graduation medal &amp; place: ${esc(o.eventTitle || 'NGL Schools Graduation')}`}<br><span style="color:#6b6f8f;font-size:12px;">${esc(o.schoolName || '')}</span></td>
 <td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${o.qty}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(o.price)}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(total)}</td></tr>
 <tr style="background:#fdf6d3;font-size:16px;font-weight:bold;color:#1c1f3a;"><td colspan="3" align="right" style="padding:10px;">Total due</td><td align="right" style="padding:10px;">${gbp(total)}</td></tr>
 </table>
@@ -3380,7 +3504,7 @@ function invoiceEmailHTML(o, club){
 <tr><td style="${td}">Account number</td><td style="${td}"><b>${esc(INVOICE.bank.accountNumber)}</b></td></tr>
 <tr><td style="${td}">Payment reference</td><td style="${td}"><b style="font-family:Consolas,Menlo,monospace;background:#fdf6d3;padding:1px 6px;">${esc(o.id)}</b></td></tr>
 </table>
-<p style="margin:8px 0 0;font-size:12px;color:#4a4e6d;">Please use the payment reference exactly as shown so we can match your payment. Your club’s NGL Schools Hub code is switched on as soon as payment is received.</p>
+<p style="margin:8px 0 0;font-size:12px;color:#4a4e6d;">Please use the payment reference exactly as shown so we can match your payment. ${isLicence(o) ? 'Your club’s NGL Schools Hub code is switched on as soon as payment is received.' : 'Your Graduation medals are sent as soon as payment is received.'}</p>
 </td></tr></table>
 <p style="margin:18px 0 0;font-size:13px;color:#4a4e6d;">You can download a PDF copy of this invoice at any time from the Orders tab of your <a href="${SITE_URL}/club/" style="color:#2a245f;font-weight:bold;">NGL Schools Club Hub</a>.</p>
 </td></tr>
@@ -3439,6 +3563,13 @@ document.addEventListener('click', async e => {
     if(!em.trim()){ if(err) err.textContent = 'Type your email above, then tap “Forgotten your password?” again.'; return; }
     const r = await api.resetPassword(em.trim());
     if(err){ err.style.color = r.ok ? 'var(--ok)' : ''; err.textContent = r.ok ? 'If there’s a club account for that email, a reset link is on its way.' : r.reason; }
+  }
+  else if(a === 'add-grad'){ gradModal(null); }
+  else if(a === 'order-medals'){ const ev = S.events.find(e => e.id === act.dataset.ev); if(ev) medalsModal(ev); }
+  else if(a === 'edit-grad'){ gradModal(S.events.find(e => e.id === act.dataset.ev)); }
+  else if(a === 'del-grad'){
+    if(act.dataset.armed){ act.disabled = true; try{ await api.deleteEvent(act.dataset.ev); show(); }catch(err){ console.error(err); act.disabled = false; act.textContent = 'Failed, retry'; } }
+    else { act.dataset.armed = '1'; act.textContent = 'Tap again to delete'; }
   }
   else if(a === 'edit-club'){ editClubModal(S.club, false); }
   else if(a === 'adm-edit-club'){ const c = ADM.clubs.find(x => x.id === act.dataset.club); if(c) editClubModal(c, true); }
