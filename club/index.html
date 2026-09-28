@@ -2555,7 +2555,7 @@ const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 function codePrefix(name){
   const words = String(name).toUpperCase().replace(/[^A-Z ]/g,'').split(/\s+/)
     .filter(w => w && !['GYMNASTICS','GYMNASTIC','GYM','CLUB','THE','ACADEMY','OF','AND'].includes(w));
-  return ((words[0] || 'NGL') + (words[1] || '')).slice(0, 8).padEnd(2, 'X');
+  return (words[0] || 'NGL').slice(0, 10).padEnd(2, 'X');
 }
 function newAccessCode(clubName){
   const r = new Uint32Array(4); crypto.getRandomValues(r);
@@ -2633,14 +2633,15 @@ async function loadClubData(uid){
   S.schools = schoolsSnap.docs.map(d => ({id:d.id, ...d.data()})).sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
   S.orders = ordersSnap.docs.map(d => ({id:d.id, ...d.data()})).sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
 }
-async function claimNewCode(clubName, active){
+async function claimNewCode(clubName, active, clubId){
+  clubId = clubId || S.uid;
   const {fs, D} = await fb();
   for(let i = 0; i < 6; i++){
     const code = newAccessCode(clubName);
     const ref = fs.doc(D, 'accessCodes', code);
     const snap = await fs.getDoc(ref);
     if(snap.exists()) continue;
-    await fs.setDoc(ref, {clubId:S.uid, clubName, season:S.season, status: active ? 'active' : 'inactive', createdAt: fs.serverTimestamp()});
+    await fs.setDoc(ref, {clubId, clubName, season:S.season, status: active ? 'active' : 'inactive', createdAt: fs.serverTimestamp()});
     return code;
   }
   throw new Error('Could not create a club code');
@@ -2705,7 +2706,26 @@ const liveApi = {
     if(old) await fs.deleteDoc(fs.doc(D, 'accessCodes', old)).catch(() => {});
     S.club.accessCode = code; return code;
   },
+  async updateClub(d){
+    const {fs, D} = await fb();
+    await fs.updateDoc(fs.doc(D, 'clubs', S.uid), d);
+    if(d.name && S.club.accessCode) await fs.updateDoc(fs.doc(D, 'accessCodes', S.club.accessCode), {clubName:d.name}).catch(() => {});
+    Object.assign(S.club, d);
+  },
   // ----- NGL admin -----
+  async adminUpdateClub(club, d, regenerate){
+    const {fs, D} = await fb();
+    const upd = {...d};
+    if(regenerate){
+      const code = await claimNewCode(d.name || club.name, !!club.codeActive, club.id);
+      upd.accessCode = code;
+      if(club.accessCode) await fs.deleteDoc(fs.doc(D, 'accessCodes', club.accessCode)).catch(() => {});
+    }else if(d.name && club.accessCode){
+      await fs.updateDoc(fs.doc(D, 'accessCodes', club.accessCode), {clubName:d.name}).catch(() => {});
+    }
+    await fs.updateDoc(fs.doc(D, 'clubs', club.id), upd);
+    if(club.id === S.uid) Object.assign(S.club, upd);
+  },
   async adminLoad(){
     const {fs, D} = await fb();
     const [c, o] = await Promise.all([fs.getDocs(fs.collection(D, 'clubs')), fs.getDocs(fs.collection(D, 'orders'))]);
@@ -2753,6 +2773,8 @@ const demoApi = {
     S.orders.push(o); return o;
   },
   async newCode(){ S.club.accessCode = newAccessCode(S.club.name); return S.club.accessCode; },
+  async updateClub(d){ Object.assign(S.club, d); },
+  async adminUpdateClub(club, d, regenerate){ Object.assign(S.club, d); if(regenerate) S.club.accessCode = newAccessCode(S.club.name); },
   async adminLoad(){ return {clubs:[{id:'demo', ...S.club}], orders:S.orders.slice().reverse()}; },
   async adminMarkPaid(order, club){
     const o = S.orders.find(x => x.id === order.id); if(o) o.status = 'paid';
@@ -2940,9 +2962,10 @@ function screenRegister(){
       <h2>Register your club</h2>
       <p class="muted">Takes a minute. You’ll go straight into your Club Hub.</p>
       <form id="regForm">
-        <div class="field"><label for="cn">Club name</label><input class="input" id="cn" required></div>
+        <div class="field"><label for="cn">Club name (as your families know it)</label><input class="input" id="cn" placeholder="e.g. Riverside Gymnastics Club" autocomplete="organization" required>
+          <p class="note" id="codePreview" style="margin:6px 0 0">Your families’ Hub code will start with your club’s name.</p></div>
         <div class="field"><label for="bg">British Gymnastics club number</label><input class="input" id="bg" required></div>
-        <div class="field"><label for="ct">Contact name</label><input class="input" id="ct" autocomplete="name" required></div>
+        <div class="field"><label for="ct">Your name (main contact)</label><input class="input" id="ct" placeholder="e.g. Jo Smith" autocomplete="name" required></div>
         <div class="field"><label for="re">Email</label><input class="input" id="re" type="email" autocomplete="email" required></div>
         <div class="field"><label for="rp">Choose a password</label><input class="input" id="rp" type="password" autocomplete="new-password" minlength="8" required></div>
         <label class="note" style="display:flex;gap:10px;align-items:flex-start;margin:4px 0 14px"><input type="checkbox" required style="margin-top:3px"> I confirm our club is affiliated to British Gymnastics and agree to the NGL Schools licence terms.</label>
@@ -2950,6 +2973,13 @@ function screenRegister(){
         <button class="btn block" type="submit">Register and open Club Hub</button>
       </form>
     </div>`);
+  const cn = document.getElementById('cn');
+  cn.addEventListener('input', () => {
+    const v = cn.value.trim();
+    document.getElementById('codePreview').innerHTML = v
+      ? `Your families’ Hub code will be <b class="mono" style="color:var(--schools)">${esc(codePrefix(v))}-XXXX</b>`
+      : 'Your families’ Hub code will start with your club’s name.';
+  });
   document.getElementById('regForm').addEventListener('submit', async e => {
     e.preventDefault();
     const v = id => document.getElementById(id).value.trim();
@@ -2972,6 +3002,43 @@ function schoolCount(id){ return seasonOrders().filter(o => o.schoolId === id).r
 function codeLive(){ return !!S.club.codeActive; }
 function hubLink(){ return PARENT_HUB_URL + '?code=' + encodeURIComponent(S.club.accessCode); }
 
+function clubDetailsHTML(){
+  return `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <div><h3 style="margin:0 0 4px">Club details</h3>
+        <p class="muted" style="margin:0">${esc(S.club.name)} · BG no. ${esc(S.club.bgNumber || '—')} · Contact: ${esc(S.club.contact || '—')} · ${esc(S.club.email || '')}</p></div>
+      <button class="btn ghost small" data-act="edit-club">Edit details</button>
+    </div></div>`;
+}
+function editClubModal(club, isAdminEdit){
+  const m = modal(`<h2>${isAdminEdit ? 'Edit club' : 'Edit club details'}</h2>
+    <form id="ecf">
+      <div class="field"><label for="ecn">Club name (as families know it)</label><input class="input" id="ecn" value="${esc(club.name || '')}" required></div>
+      <div class="field"><label for="ebg">British Gymnastics club number</label><input class="input" id="ebg" value="${esc(club.bgNumber || '')}"></div>
+      <div class="field"><label for="ect">Main contact name</label><input class="input" id="ect" value="${esc(club.contact || '')}" required></div>
+      ${isAdminEdit ? `<div class="field"><label for="eem">Contact email (for invoices)</label><input class="input" id="eem" type="email" value="${esc(club.email || '')}"></div>` : ''}
+      <label class="note" style="display:flex;gap:10px;align-items:flex-start;margin:4px 0 6px"><input type="checkbox" id="eregen" style="margin-top:3px"> Also give the club a new Hub code based on this name</label>
+      <p class="note" id="eregenNote" style="margin:0 0 14px">Current code: <b class="mono">${esc(club.accessCode || '')}</b>. Only change it if the old code hasn’t been shared with families yet, because the old code stops working.</p>
+      <p class="error" id="ecErr"></p>
+      <div class="btn-row"><button class="btn" type="submit">Save</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
+    </form>`);
+  const nameIn = m.querySelector('#ecn');
+  const regen = m.querySelector('#eregen');
+  const tick = () => { if(codePrefix(nameIn.value) !== String(club.accessCode || '').split('-')[0]) regen.checked = true; };
+  nameIn.addEventListener('input', tick);
+  m.querySelector('#ecf').addEventListener('submit', async e => {
+    e.preventDefault();
+    const d = {name:nameIn.value.trim(), bgNumber:m.querySelector('#ebg').value.trim(), contact:m.querySelector('#ect').value.trim()};
+    if(isAdminEdit) d.email = m.querySelector('#eem').value.trim();
+    const btn = m.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+    try{
+      if(isAdminEdit) await api.adminUpdateClub(club, d, regen.checked);
+      else { await api.updateClub(d); if(regen.checked) await api.newCode(); }
+      m.remove();
+      if(isAdminEdit) screenAdmin(); else show();
+    }catch(err){ console.error(err); btn.disabled = false; btn.textContent = 'Save'; m.querySelector('#ecErr').textContent = 'Couldn’t save. Please try again.'; }
+  });
+}
 function codeCardHTML(){
   const live = codeLive();
   return `
@@ -3026,6 +3093,8 @@ function screenDashboard(){
     </div>
 
     ${codeCardHTML()}
+
+    ${clubDetailsHTML()}
 
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
@@ -3199,14 +3268,15 @@ async function screenAdmin(){
     <div class="card">
       <h2>Clubs (${ADM.clubs.length})</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Club</th><th>BG no.</th><th>Contact</th><th>Code</th><th class="num">${esc(S.season)} licences</th><th class="num">Band</th><th class="num">Next year</th></tr></thead>
+        <thead><tr><th>Club</th><th>BG no.</th><th>Contact</th><th>Code</th><th class="num">${esc(S.season)} licences</th><th class="num">Band</th><th class="num">Next year</th><th></th></tr></thead>
         <tbody>${ADM.clubs.map(c => {
           const t = totals[c.id] || 0; const band = c.bands && c.bands[S.season]; const nx = t ? bandFor(t).price : null;
           return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.bgNumber||'')}</td><td>${esc(c.contact||'')}<div class="note">${esc(c.email||'')}</div></td>
             <td class="mono">${esc(c.accessCode||'')} ${c.codeActive ? '<span class="tag ok">Live</span>' : '<span class="tag wait">Off</span>'}</td>
             <td class="num">${t}</td><td class="num">${band ? gbp(band) : '<span class="muted">—</span>'}</td>
-            <td class="num">${nx ? (band && nx !== band ? `<span class="tag info">${gbp(nx)}</span>` : gbp(nx)) : '<span class="muted">—</span>'}</td></tr>`;
-        }).join('') || '<tr><td colspan="7" class="muted">No clubs yet.</td></tr>'}</tbody>
+            <td class="num">${nx ? (band && nx !== band ? `<span class="tag info">${gbp(nx)}</span>` : gbp(nx)) : '<span class="muted">—</span>'}</td>
+            <td class="num"><button class="btn ghost small" data-act="adm-edit-club" data-club="${esc(c.id)}">Edit</button></td></tr>`;
+        }).join('') || '<tr><td colspan="8" class="muted">No clubs yet.</td></tr>'}</tbody>
       </table></div>
     </div>
 
@@ -3370,6 +3440,8 @@ document.addEventListener('click', async e => {
     const r = await api.resetPassword(em.trim());
     if(err){ err.style.color = r.ok ? 'var(--ok)' : ''; err.textContent = r.ok ? 'If there’s a club account for that email, a reset link is on its way.' : r.reason; }
   }
+  else if(a === 'edit-club'){ editClubModal(S.club, false); }
+  else if(a === 'adm-edit-club'){ const c = ADM.clubs.find(x => x.id === act.dataset.club); if(c) editClubModal(c, true); }
   else if(a === 'invoice'){
     const o = S.orders.find(x => x.id === act.dataset.order); if(o) showInvoice(o, S.club || {});
   }
