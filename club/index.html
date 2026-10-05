@@ -2823,14 +2823,14 @@ let tab = 'dashboard';
 const $view = document.getElementById('view');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function render(html){ $view.innerHTML = '<div class="screen">' + html + '</div>'; }
+const ADMIN_MODE = new URLSearchParams(location.search).has('admin');
 function setTop(){
   const ta = document.getElementById('topActions');
   const nav = document.getElementById('navtabs');
   if(signedIn){
     ta.innerHTML = `${S.club ? `<span class="pill">${esc(S.club.name)}</span>` : ''}<button class="btn ghost small" data-act="signout">Sign out</button>`;
     nav.hidden = false;
-    const tabs = S.club ? [['dashboard','Dashboard'],['orders','Orders'],['programme','Programme & pricing']] : [];
-    if(S.isAdmin) tabs.push(['admin','NGL Admin']);
+    const tabs = (S.club && !ADMIN_MODE) ? [['dashboard','Dashboard'],['orders','Orders'],['programme','Programme & pricing']] : [];
     nav.innerHTML = tabs
       .map(([k,l]) => `<button class="navtab ${tab===k?'active':''}" data-tab="${k}">${l}</button>`).join('');
   }else{
@@ -2969,8 +2969,8 @@ function screenLogin(msg){
   render(`
     <div class="auth card">
       ${FIREBASE_CONFIG ? '' : '<div class="demo-banner">Preview mode: any email and password opens a demo club (with the NGL Admin tab)</div>'}
-      <h2>Club login</h2>
-      <p class="muted">For NGL Schools clubs.</p>
+      <h2>${ADMIN_MODE ? 'NGL Schools admin' : 'Club login'}</h2>
+      <p class="muted">${ADMIN_MODE ? 'Sign in with your NGL admin account.' : 'For NGL Schools clubs.'}</p>
       <form id="loginForm">
         <div class="field"><label for="em">Email</label><input class="input" id="em" type="email" autocomplete="email" required></div>
         <div class="field"><label for="pw">Password</label><input class="input" id="pw" type="password" autocomplete="current-password" required></div>
@@ -3181,8 +3181,10 @@ function screenProgramme(){ render(pitchHTML(true)); }
 
 function show(){
   setTop();
-  if(!signedIn) return screenLanding();
-  ({dashboard:screenDashboard, orders:screenOrders, programme:screenProgramme, admin:screenAdmin})[tab]();
+  if(!signedIn) return ADMIN_MODE ? screenLogin() : screenLanding();
+  if(ADMIN_MODE){ if(S.isAdmin) screenAdmin(); else render('<div class="card"><h2>NGL admins only</h2><p class="muted">This login isn’t an NGL admin account.</p></div>'); window.scrollTo(0,0); return; }
+  if(tab === 'admin' || !S.club){ if(!S.club){ render('<div class="card"><h2>No club on this login</h2><p class="muted">NGL admin has moved to the main NGL Admin app (Awards licences).</p></div>'); window.scrollTo(0,0); return; } tab = 'dashboard'; }
+  ({dashboard:screenDashboard, orders:screenOrders, programme:screenProgramme})[tab]();
   window.scrollTo(0,0);
 }
 
@@ -3548,7 +3550,7 @@ document.addEventListener('click', async e => {
   const act = t.closest('[data-act]');
   if(!act) return;
   const a = act.dataset.act;
-  if(a === 'signout'){ await api.signOut(); signedIn = false; S.club = null; S.isAdmin = false; screenLanding(); }
+  if(a === 'signout'){ await api.signOut(); signedIn = false; S.club = null; S.isAdmin = false; ADMIN_MODE ? screenLogin() : screenLanding(); }
   else if(a === 'add-school') addSchoolModal();
   else if(a === 'order') orderModal(act.dataset.school);
   else if(a === 'copy-msg') copyText(parentMessage(), 'Message copied. Paste it into your letter, email or WhatsApp.');
@@ -3603,7 +3605,7 @@ const BOOK_COVER = '/9j/4AAQSkZJRgABAQIAOwA7AAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcH
   let restored = false;
   try{ restored = await api.restore(); }catch(e){ console.error(e); }
   if(restored){ signedIn = true; tab = S.club ? 'dashboard' : 'admin'; show(); }
-  else screenLanding();
+  else if(ADMIN_MODE) screenLogin(); else screenLanding();
 })();
 </script>
 </body>
