@@ -2562,21 +2562,100 @@ const INVOICE = {
   bank: { accountName: 'National Gymnastics League', sortCode: '60-84-64', accountNumber: '93416867' }
 };
 
-/* ---------- Pricing rules ---------- */
-const BANDS = [
-  {min:1,    max:99,       price:25, label:'1–99'},
-  {min:100,  max:499,      price:22, label:'100–499'},
-  {min:500,  max:999,      price:20, label:'500–999'},
-  {min:1000, max:Infinity, price:null, label:'1,000+'}
+/* ---------- Pricing (Oct 2026) ----------
+   One yearly Schools Club Licence per club, banded by the number of Schools gymnasts. It runs
+   12 months from the day NGL confirms payment. Books, certificates and t-shirts are ordered
+   here while the licence is active. Each band can buy books up to 10% above its top gymnast
+   number per licence year; past that the club upgrades to the next band for the difference,
+   pro-rata for the months left. Same bands as NGL Recreational (Recreational is priced higher). */
+const SCHOOLS_BANDS = [
+  {key:'xs', label:'1 to 24 Schools gymnasts',    short:'1–24',    price:150,  books:27},
+  {key:'sm', label:'25 to 49 Schools gymnasts',   short:'25–49',   price:250,  books:54},
+  {key:'s',  label:'50 to 99 Schools gymnasts',   short:'50–99',   price:400,  books:109},
+  {key:'m',  label:'100 to 249 Schools gymnasts', short:'100–249', price:750,  books:274},
+  {key:'m2', label:'250 to 399 Schools gymnasts', short:'250–399', price:1000, books:439},
+  {key:'l',  label:'400 to 599 Schools gymnasts', short:'400–599', price:1250, books:659},
+  {key:'xl', label:'600 or more Schools gymnasts', short:'600+',   price:1500, books:null}   // null = no limit
 ];
-function bandFor(count){ return BANDS.find(b => count >= b.min && count <= b.max) || BANDS[0]; }
-const EXTRAS = [
-  {item:'Awards Book', price:8},
-  {item:'Certificate', price:1},
-  {item:'NGL Schools Coach T-shirt', price:20},
-  {item:'Graduation medal & place (per graduate)', price:5}
+const PRICES = [
+  {kind:'book',   name:'NGL Schools Awards Book', price:5,    rrp:'£10',        note:'Six levels; lasts more than a year'},
+  {kind:'cert',   name:'Certificate (Bronze, Silver or Gold)', price:0.10, rrp:'', note:'Three per level'},
+  {kind:'tshirt', name:'NGL children’s t-shirt',  price:12,   rrp:'£17 to £20', note:''}
 ];
-const gbp = n => n == null ? 'Agreement' : '£' + n.toLocaleString('en-GB', {minimumFractionDigits: n % 1 ? 2 : 0});
+const CERT_TYPES = [{key:'bronze', name:'Bronze'}, {key:'silver', name:'Silver'}, {key:'gold', name:'Gold'}];
+const POSTAGE = [{upTo:20, price:4}, {upTo:100, price:8}, {upTo:Infinity, price:12}];
+function postageFor(items){ if(items <= 0) return 0; return POSTAGE.find(p => items <= p.upTo).price; }
+const shopItem = k => PRICES.find(x => x.kind === k);
+/* Multi-pathway discount: 5% off every pathway licence except the club's most expensive. */
+const MULTI_PATHWAY_DISCOUNT = 0.05;
+const OTHER_PATHWAY_PRICES = {
+  rec:       {xs:200, sm:300, s:500, m:1000, m2:1250, l:1500, xl:2000},   // NGL Recreational
+  preschool: {xs:150, sm:250, s:400, m:750}                               // NGL Pre-School (top band 100+)
+};
+const gbp = n => n == null ? 'Agreement' : (n < 0 ? '−£' : '£') + Math.abs(n).toLocaleString('en-GB', {minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2});
+
+/* ---------- Licence helpers ---------- */
+function toDate(c){ if(!c) return null; if(typeof c.toDate === 'function') return c.toDate(); if(c.seconds) return new Date(c.seconds * 1000); return new Date(c); }
+function addYear(d){ const x = new Date(d); x.setFullYear(x.getFullYear() + 1); return x; }
+// A licence runs 12 months from activation; a renewal paid early starts when the current one ends.
+function licenceExpiry(lic, now = new Date()){ const cur = lic && lic.expires ? toDate(lic.expires) : null; return addYear(cur && cur > now ? cur : now); }
+const bandOf = k => SCHOOLS_BANDS.find(b => b.key === k) || null;
+const nextBand = key => SCHOOLS_BANDS[Math.min(SCHOOLS_BANDS.length - 1, SCHOOLS_BANDS.findIndex(b => b.key === key) + 1)];
+function monthsRemaining(lic, now = new Date()){
+  if(!lic || !lic.expires) return 12;
+  const e = toDate(lic.expires); let m = (e.getFullYear() - now.getFullYear()) * 12 + (e.getMonth() - now.getMonth());
+  if(e.getDate() > now.getDate()) m += 1;
+  return Math.max(1, Math.min(12, m));
+}
+function upgradeCost(fromKey, toKey, lic){
+  const a = bandOf(fromKey) || SCHOOLS_BANDS[0], b = bandOf(toKey) || a;
+  return Math.round((b.price - a.price) * monthsRemaining(lic) / 12 * 100) / 100;
+}
+// Licence state for a club: none | awaiting | active | expired
+function licState(club, orders, now = new Date()){
+  const lic = club && club.schools;
+  const pending = (orders || []).some(o => o.type === 'club-licence' && (o.kind === 'start' || o.kind === 'renew') && o.status !== 'paid');
+  if(lic && lic.status === 'active' && lic.expires){
+    const exp = toDate(lic.expires), days = Math.ceil((exp - now) / 86400000);
+    return {key: days > 0 ? 'active' : 'expired', band: bandOf(lic.band), exp, days, pending};
+  }
+  return {key: pending ? 'awaiting' : 'none', band: lic ? bandOf(lic.band) : null, pending};
+}
+const licActive = () => licState(S.club, S.orders).key === 'active';
+/* Book allowance: books in the order that started or renewed the licence, and every order since. */
+function bookAllowance(club, orders){
+  const band = bandOf(club && club.schools && club.schools.band) || SCHOOLS_BANDS[0];
+  const lic = (orders || []).filter(o => o.type === 'club-licence' && (o.kind === 'start' || o.kind === 'renew')).sort((a,b) => toDate(b.createdAt) - toDate(a.createdAt))[0];
+  const from = lic ? toDate(lic.createdAt) : new Date(0);
+  const used = (orders || []).filter(o => toDate(o.createdAt) >= from)
+    .reduce((a, o) => a + (o.lines || []).filter(l => l.kind === 'book').reduce((x, l) => x + l.qty, 0), 0);
+  return {band, used, limit: band.books, left: band.books == null ? Infinity : Math.max(0, band.books - used)};
+}
+function otherLicencePrices(club, now = new Date()){
+  return Object.keys(OTHER_PATHWAY_PRICES).map(k => {
+    const lic = club && club[k];
+    if(!lic || lic.status !== 'active' || (lic.expires && toDate(lic.expires) < now)) return 0;
+    return OTHER_PATHWAY_PRICES[k][lic.band] || 0;
+  }).filter(Boolean);
+}
+function multiPathwayDiscount(club, price){
+  if(!(price > 0)) return 0;
+  return otherLicencePrices(club).some(x => x >= price) ? Math.round(price * MULTI_PATHWAY_DISCOUNT * 100) / 100 : 0;
+}
+/* Orders: new ones are built from lines; old per-gymnast and Graduation orders use qty × price. */
+const isOldLicence = o => (o.type || 'licence') === 'licence';
+function orderLines(o){
+  if(o.lines && o.lines.length) return o.lines;
+  if(o.type === 'graduation') return [{kind:'graduation', desc:`NGL Graduation medal & place: ${o.eventTitle || 'NGL Schools Graduation'}`, sub:o.schoolName || '', qty:o.qty, unit:o.price}];
+  return [{kind:'legacy', desc:`NGL Schools gymnast licence, ${o.season || ''} school year (per gymnast)`, sub:o.schoolName || '', qty:o.qty, unit:o.price}];
+}
+const orderTotal = o => orderLines(o).reduce((a, l) => a + l.qty * l.unit, 0);
+function orderSummary(o){
+  if(o.type === 'club-licence') return o.kind === 'upgrade' ? 'Club Licence upgrade' : (o.kind === 'renew' ? 'Club Licence renewal' : 'New Club Licence') + (bandOf(o.band) ? ` · ${bandOf(o.band).short} gymnasts` : '');
+  if(o.type === 'supplies') return 'Books, certificates & t-shirts' + (o.upgradeTo ? ' + band upgrade' : '');
+  if(o.type === 'graduation') return 'Graduation medals' + (o.eventDate ? ' · ' + o.eventDate : '');
+  return 'Per-gymnast licence (old model)' + (o.schoolName ? ' · ' + o.schoolName : '');
+}
 
 /* ---------- School year ---------- */
 function currentSeason(d = new Date()){
@@ -2605,28 +2684,18 @@ function newAccessCode(clubName){
    and save it — from Firebase when FIREBASE_CONFIG is set, otherwise
    from demo data (preview mode, nothing saved).
    Firestore:
-     clubs/{uid}                 name, bgNumber, contact, email, accessCode,
-                                 bands{season:price}, codeActive, createdAt
+     clubs/{uid}                 name, bgNumber, contact, email, accessCode, deliveryAddress,
+                                 schools{status, band, season, expires, activatedAt} (NGL admin only),
+                                 codeActive (NGL admin only), bands{} (old per-gymnast model), createdAt
      clubs/{uid}/schools/{id}    name, createdAt
-     orders/{ORD-XXXXX}          clubId, clubName, schoolId, schoolName, qty,
-                                 price, season, status, createdAt, paidAt
+     orders/{ORD-XXXXX}          clubId, clubName, type 'club-licence'|'supplies'|'graduation'
+                                 (|'licence' = old per-gymnast), kind start|renew, band, upgradeTo,
+                                 lines[{kind, desc, qty, unit}], total, delivery, season, status
      accessCodes/{CODE}          clubId, clubName, season, status 'active'|'inactive'
      admins/{uid}                (exists = NGL admin)
    ===================================================================== */
 const S = {season: currentSeason(), uid:null, isAdmin:false, club:null, schools:[], orders:[], events:[]};
 
-// Price for this school year: fixed band if NGL has set it, otherwise last
-// year's total decides it, otherwise the first order does (null here).
-function lastYearTotal(){
-  const prev = (+S.season.slice(0,4) - 1) + '/' + S.season.slice(2,4);
-  return S.orders.filter(o => o.season === prev && (o.type || 'licence') === 'licence').reduce((a,o) => a + o.qty, 0);
-}
-function currentPrice(){
-  const fixed = S.club && S.club.bands && S.club.bands[S.season];
-  if(fixed) return fixed;
-  const ly = lastYearTotal();
-  return ly ? bandFor(ly).price : null;
-}
 function orderRef(){
   const r = new Uint32Array(5); crypto.getRandomValues(r);
   return 'ORD-' + Array.from(r, x => CODE_ALPHABET[x % CODE_ALPHABET.length]).join('');
@@ -2680,7 +2749,8 @@ async function claimNewCode(clubName, active, clubId){
     const ref = fs.doc(D, 'accessCodes', code);
     const snap = await fs.getDoc(ref);
     if(snap.exists()) continue;
-    await fs.setDoc(ref, {clubId, clubName, season:S.season, status: active ? 'active' : 'inactive', createdAt: fs.serverTimestamp()});
+    const licExp = (clubId === S.uid && S.club && S.club.schools && S.club.schools.expires) || null;
+    await fs.setDoc(ref, {clubId, clubName, season:S.season, ...(licExp ? {expires:licExp} : {}), status: active ? 'active' : 'inactive', createdAt: fs.serverTimestamp()});
     return code;
   }
   throw new Error('Could not create a club code');
@@ -2728,14 +2798,12 @@ const liveApi = {
     const ref = await fs.addDoc(fs.collection(D, 'clubs', S.uid, 'schools'), {name, createdAt:fs.serverTimestamp()});
     const s = {id:ref.id, name}; S.schools.push(s); return s;
   },
-  async orderLicences(schoolId, qty){
+  async placeOrder(o){
     const {fs, D} = await fb();
-    const price = currentPrice() ?? bandFor(qty).price;
-    const school = S.schools.find(s => s.id === schoolId);
     const id = orderRef();
-    const o = {clubId:S.uid, clubName:S.club.name, schoolId, schoolName:school ? school.name : '', qty, price, season:S.season, status:'awaiting-payment'};
-    await fs.setDoc(fs.doc(D, 'orders', id), {...o, createdAt:fs.serverTimestamp()});
-    const local = {id, ...o, createdAt:new Date()}; S.orders.push(local); return local;
+    const data = {...o, clubId:S.uid, clubName:S.club.name, season:S.season, status:'awaiting-payment'};
+    await fs.setDoc(fs.doc(D, 'orders', id), {...data, createdAt:fs.serverTimestamp()});
+    const local = {id, ...data, createdAt:new Date()}; S.orders.push(local); return local;
   },
   async orderGraduation(ev, qty){
     const {fs, D} = await fb();
@@ -2796,11 +2864,20 @@ const liveApi = {
     const {fs, D} = await fb();
     const batch = fs.writeBatch(D);
     batch.update(fs.doc(D, 'orders', order.id), {status:'paid', paidAt:fs.serverTimestamp()});
-    if(!isLicence(order)){ await batch.commit(); return; }   // Graduation medals don't affect band or code
     const clubRef = fs.doc(D, 'clubs', club.id);
-    if(club.bands && club.bands[order.season]) batch.update(clubRef, {codeActive:true});
-    else batch.update(clubRef, 'codeActive', true, new fs.FieldPath('bands', order.season), order.price);   // first order fixes the band
-    if(club.accessCode) batch.update(fs.doc(D, 'accessCodes', club.accessCode), {status:'active', season:order.season});
+    if(order.type === 'club-licence' && (order.kind === 'start' || order.kind === 'renew')){
+      // Licence on for 12 months (a renewal paid early starts when the current year ends); family code on
+      const expires = fs.Timestamp.fromDate(licenceExpiry(club.schools));
+      batch.update(clubRef, {schools:{status:'active', band:order.band, season:order.season || S.season, expires, activatedAt:fs.serverTimestamp()}, codeActive:true});
+      if(club.accessCode) batch.update(fs.doc(D, 'accessCodes', club.accessCode), {status:'active', season:order.season || S.season, expires});
+    }else if(order.upgradeTo && club.schools){
+      batch.update(clubRef, {schools:{...club.schools, band:order.upgradeTo}});
+    }else if(isOldLicence(order)){
+      // Old per-gymnast orders (before Oct 2026)
+      if(club.bands && club.bands[order.season]) batch.update(clubRef, {codeActive:true});
+      else batch.update(clubRef, 'codeActive', true, new fs.FieldPath('bands', order.season), order.price);
+      if(club.accessCode) batch.update(fs.doc(D, 'accessCodes', club.accessCode), {status:'active', season:order.season});
+    }
     await batch.commit();
   },
   async adminSetBand(clubId, season, price){
@@ -2815,22 +2892,22 @@ const demoApi = {
   async restore(){ return false; },
   async signIn(){
     S.club = makeClub('SAADI Gymnastics', 'Dave Brooke', CONTACT_EMAIL);
-    S.club.bands[S.season] = 20; S.club.codeActive = true; S.isAdmin = true;
+    S.club.codeActive = true; S.isAdmin = true;
+    S.club.schools = {status:'active', band:'m2', season:S.season, expires:new Date(Date.now() + 300 * 86400000)};
+    S.club.deliveryAddress = 'SAADI Gymnastics\nHarpenden\nAL5';
     S.schools = []; S.orders = []; S.events = [];
-    [['Brookfield Primary',183],['St Mary’s C of E Primary',126],['Oakwood Junior School',207],['Hillside Infants',94]]
-      .forEach(([n,q],i) => { const s = {id:'s'+(i+1), name:n}; S.schools.push(s); S.orders.push({id:'ORD-'+(1001+i), clubId:'demo', clubName:S.club.name, schoolId:s.id, schoolName:n, qty:q, price:20, status:'paid', season:S.season}); });
+    ['Brookfield Primary','St Mary’s C of E Primary','Oakwood Junior School','Hillside Infants'].forEach((n,i) => S.schools.push({id:'s'+(i+1), name:n}));
+    S.orders.push({id:'ORD-1001', type:'club-licence', kind:'start', band:'m2', clubId:'demo', clubName:S.club.name, season:S.season, status:'paid', createdAt:new Date(Date.now() - 65 * 86400000),
+      lines:[{kind:'club', desc:'NGL Schools Club Licence, 250 to 399 gymnasts (12 months)', qty:1, unit:1000}]});
+    S.orders.push({id:'ORD-1002', type:'supplies', clubId:'demo', clubName:S.club.name, season:S.season, status:'paid', createdAt:new Date(Date.now() - 60 * 86400000),
+      lines:[{kind:'book', desc:'NGL Schools Awards Book', qty:380, unit:5}, {kind:'postage', desc:'Postage and packing (380 items)', qty:1, unit:12}]});
     return {ok:true};
   },
   async resetPassword(){ return {ok:true}; },
   async register(d){ S.club = makeClub(d.name, d.contact, d.email); S.isAdmin = false; S.schools = []; S.orders = []; S.events = []; return {ok:true}; },
   async signOut(){},
   async addSchool(name){ const s = {id:'s' + (S.schools.length + 1), name}; S.schools.push(s); return s; },
-  async orderLicences(schoolId, qty){
-    const price = currentPrice() ?? bandFor(qty).price;
-    const school = S.schools.find(s => s.id === schoolId);
-    const o = {id:orderRef(), clubId:'demo', clubName:S.club.name, schoolId, schoolName:school ? school.name : '', qty, price, status:'awaiting-payment', season:S.season, createdAt:new Date()};
-    S.orders.push(o); return o;
-  },
+  async placeOrder(o){ const local = {id:orderRef(), ...o, clubId:'demo', clubName:S.club.name, season:S.season, status:'awaiting-payment', createdAt:new Date()}; S.orders.push(local); return local; },
   async orderGraduation(ev, qty){
     const o = {id:orderRef(), type:'graduation', clubId:'demo', clubName:S.club.name, eventId:ev.id, eventTitle:ev.title || 'NGL Schools Graduation', eventDate:ev.date || '',
                schoolId:ev.schoolId || '', schoolName:'Graduation ' + evDateShort(ev), qty, price:GRAD_NGL_FEE, status:'awaiting-payment', season:S.season, createdAt:new Date()};
@@ -2844,8 +2921,8 @@ const demoApi = {
   async adminLoad(){ return {clubs:[{id:'demo', ...S.club}], orders:S.orders.slice().reverse()}; },
   async adminMarkPaid(order, club){
     const o = S.orders.find(x => x.id === order.id); if(o) o.status = 'paid';
-    if(!isLicence(order)) return;
-    S.club.codeActive = true; if(!S.club.bands[order.season]) S.club.bands[order.season] = order.price;
+    if(order.type === 'club-licence' && (order.kind === 'start' || order.kind === 'renew')){ S.club.schools = {status:'active', band:order.band, season:S.season, expires:licenceExpiry(S.club.schools)}; S.club.codeActive = true; }
+    else if(order.upgradeTo && S.club.schools) S.club.schools = {...S.club.schools, band:order.upgradeTo};
   },
   async adminSetBand(clubId, season, price){ S.club.bands[season] = price; }
 };
@@ -2895,7 +2972,7 @@ function pitchHTML(signedInView){
   <div class="section grid3">
     <div class="card"><div class="stat">£10</div><p class="muted" style="margin-top:8px">Typical amount schools pay per gymnast, per session.</p></div>
     ${signedInView
-      ? `<div class="card"><div class="stat">~2.2</div><p class="muted" style="margin-top:8px">Sessions per gymnast to recover a whole year’s licence at the £22 band.</p></div>`
+      ? `<div class="card"><div class="stat">${gbp(SCHOOLS_BANDS[0].price)}</div><p class="muted" style="margin-top:8px">A year for the smallest clubs. One Club Licence, whatever the number of schools.</p></div>`
       : `<div class="card"><div class="stat">6</div><p class="muted" style="margin-top:8px">Progressive levels across Floor, Bench and Vault, with certificates all year.</p></div>`}
     <div class="card"><div class="stat">100%</div><p class="muted" style="margin-top:8px">Of your delivery income stays with your club.</p></div>
   </div>
@@ -2903,7 +2980,7 @@ function pitchHTML(signedInView){
   <div class="section">
     <h2>How it works</h2>
     <div class="grid3 steps">
-      <div class="card step"><h3>Tell us how many</h3><p class="muted">Add each school you work with and the number of gymnasts. No names or pupil details needed.</p></div>
+      <div class="card step"><h3>Choose your size</h3><p class="muted">Start one yearly Club Licence, banded by how many Schools gymnasts you coach. No names or pupil details needed.</p></div>
       <div class="card step"><h3>Get your club code</h3><p class="muted">Your club gets one NGL Schools Hub code to share with all your Schools families.</p></div>
       <div class="card step"><h3>Families join in</h3><p class="muted">Parents enter your club code to watch the routines and follow the programme at home.</p></div>
     </div>
@@ -2924,7 +3001,7 @@ function pitchHTML(signedInView){
       <h2>What your club gets</h2>
       <ul class="ticks">
         <li>A ready-made programme, awards and progression you don’t have to design</li>
-        <li>This Club Hub to manage your schools, licences and club code</li>
+        <li>This Club Hub to manage your licence, schools, orders, Graduations and club code</li>
         <li>Two branded NGL Schools Coach T-shirts in your launch pack</li>
         <li>A route to bring school families into your club: Graduation is hosted at your venue where available</li>
       </ul>
@@ -2933,35 +3010,36 @@ function pitchHTML(signedInView){
 
   ${signedInView ? '' : `
   <div class="section card">
-    <h2>Simple per-gymnast licensing</h2>
-    <p class="muted">Clubs pay one annual licence for each gymnast registered. Your price is fixed for the whole school year, and the more gymnasts your club registers, the lower it gets.</p>
+    <h2>Simple yearly Club Licence</h2>
+    <p class="muted">Your club pays one licence a year, banded by how many Schools gymnasts you coach, with small clubs in mind. Books, certificates and t-shirts are ordered as you need them, and your licence pays for itself from what you sell to families.</p>
     <p class="muted">Full pricing is in the Club Hub. Register your club and you’ll see it straight away.</p>
     <button class="btn" data-go="register">Register your club</button>
   </div>`}
   ${!signedInView ? '' : `
   <div class="section card">
-    <h2>Licence pricing</h2>
-    <p class="muted">One annual licence per registered gymnast. Your price depends on how many gymnasts <b>your club</b> registers, not national numbers.</p>
+    <h2>Schools Club Licence, per year</h2>
+    <p class="muted">One yearly licence for your club, whatever the number of schools. It switches on your family code and lets you order Awards Books, certificates and t-shirts. It runs for 12 months from the day payment is received.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Registered gymnasts per club</th><th class="num">Annual licence per gymnast</th></tr></thead>
-      <tbody>${BANDS.map(b => `<tr ${signedInView && b.price === currentPrice() ? 'class="hl"' : ''}><td>${b.label}</td><td class="num">${b.price ? gbp(b.price) : 'Commercial agreement'}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>Schools gymnasts at your club</th><th class="num">Per year</th><th class="num">Awards Books per licence year</th></tr></thead>
+      <tbody>${SCHOOLS_BANDS.map(b => `<tr ${S.club && S.club.schools && S.club.schools.band === b.key ? 'class="hl"' : ''}><td>${b.label.replace(' Schools gymnasts', '')}</td><td class="num"><b>${gbp(b.price)}</b></td><td class="num">${b.books == null ? 'No limit' : 'Up to ' + b.books}</td></tr>`).join('')}</tbody>
     </table></div>
-
-    <h3 style="margin-top:22px">Your band is fixed for the whole school year</h3>
-    <ul class="ticks">
-      <li><b>One price all year.</b> Every licence you buy during a school year is charged at your band for that year, however many you add.</li>
-      <li><b>Reviewed every September.</b> Your band for the new school year is set by the number of licences your club held in the year just finished.</li>
-      <li><b>Grow and your price drops.</b> Reach 100 or 500 gymnasts and every licence is cheaper the following September. If numbers fall below a band, the band moves back up.</li>
-      <li><b>New clubs.</b> Your first order sets your starting band, so a club launching with 150 gymnasts starts at £22.</li>
+    <ul class="ticks" style="margin-top:14px">
+      <li><b>Running more than one NGL pathway?</b> You get 5% off every pathway licence except your most expensive one.</li>
+      <li><b>Growing?</b> If you need more books than your band allows, upgrade to the next band at any time. You pay the difference for the months left on your licence, and your renewal date stays the same.</li>
+      <li><b>Pays for itself.</b> Buy Awards Books at ${gbp(shopItem('book').price)} and sell them to families at ${esc(shopItem('book').rrp)}: ${Math.ceil(SCHOOLS_BANDS[0].price / (10 - shopItem('book').price))} books covers the smallest licence.</li>
     </ul>
+    <h3 style="margin-top:18px">Books, certificates and t-shirts</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Item</th><th class="num">Your price</th><th class="num">Suggested price to families</th></tr></thead>
+      <tbody>${PRICES.map(i => `<tr><td>${esc(i.name)}${i.note ? `<div class="note">${esc(i.note)}</div>` : ''}</td><td class="num">${gbp(i.price)}</td><td class="num">${esc(i.rrp || '—')}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <p class="note" style="margin-top:8px">Postage is added by order size: ${POSTAGE.map(x => (x.upTo === Infinity ? 'over 100 items ' : 'up to ' + x.upTo + ' items ') + gbp(x.price)).join(', ')}.</p>
   </div>`}
 
   <div class="section grid2">
     <div class="card">
       <h2>Year 2 and beyond</h2>
-      <p class="muted">Returning gymnasts keep their Awards Book and carry on progressing. Renewing their licence includes their next set of certificates and continued Hub access for their family.</p>
-      ${signedInView ? `<h3 style="margin-top:14px">Extras and replacements</h3>
-      <table><tbody>${EXTRAS.slice(0,3).map(e => `<tr><td>${e.item}</td><td class="num">${gbp(e.price)}</td></tr>`).join('')}</tbody></table>` : ''}
+      <p class="muted">Returning gymnasts keep their Awards Book and carry on progressing. Renew your Club Licence each year to keep your family code live, and order certificates as gymnasts earn them.</p>
     </div>
     <div class="card">
       <h2>Finish the year with Graduation</h2>
@@ -2988,7 +3066,7 @@ function pitchHTML(signedInView){
   ${signedInView ? '' : `
   <div class="section card" style="text-align:center">
     <h2>Ready to start?</h2>
-    <p class="muted">Register your club and you’ll go straight into your Club Hub to add schools and order licences.</p>
+    <p class="muted">Register your club and you’ll go straight into your Club Hub to start your licence.</p>
     <div class="btn-row" style="justify-content:center"><button class="btn" data-go="register">Register your club</button></div>
   </div>`}
   <div class="foot">Questions? <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a></div>
@@ -3075,14 +3153,6 @@ function screenRegisterLegacy(){
 }
 
 /* ---------- Signed-in screens ---------- */
-function seasonOrders(){ return S.orders.filter(o => o.season === S.season && isLicence(o)); }
-function counts(){
-  const O = seasonOrders();
-  const active = O.filter(o => o.status === 'paid').reduce((a,o) => a + o.qty, 0);
-  const pending = O.filter(o => o.status !== 'paid').reduce((a,o) => a + o.qty, 0);
-  return {total:active + pending, active, pending};
-}
-function schoolCount(id){ return seasonOrders().filter(o => o.schoolId === id).reduce((a,o) => a + o.qty, 0); }
 function codeLive(){ return !!S.club.codeActive; }
 function hubLink(){ return PARENT_HUB_URL + '?code=' + encodeURIComponent(S.club.accessCode); }
 
@@ -3145,87 +3215,6 @@ function codeCardHTML(){
     </div>`;
 }
 
-function screenDashboard(){
-  const c = counts();
-  const price = currentPrice();
-  const next = bandFor(c.total);
-  let toNext = '';
-  const nb = BANDS.find(b => b.min > c.total && b.price);
-  if(nb && c.total) toNext = `${(nb.min - c.total).toLocaleString('en-GB')} more licences this year puts you in the ${gbp(nb.price)} band from September.`;
-  const pct = nb ? Math.min(100, Math.round(c.total / nb.min * 100)) : 100;
-  const isNew = !S.schools.length;
-  render(`
-    ${isNew ? `<div class="card" style="border-color:var(--schools)">
-      <p class="eyebrow">Welcome, ${esc(S.club.name)}</p>
-      <h2 style="margin:0 0 6px">Your Club Hub is ready</h2>
-      <p class="muted" style="margin:0 0 14px">Add the schools you work with, then order licences for each one. Your first order sets your price band for the ${esc(S.season)} school year.</p>
-      <div class="btn-row"><button class="btn" data-act="add-school">+ Add your first school</button><button class="btn ghost" data-tab="programme">See programme &amp; pricing</button></div>
-    </div>` : ''}
-
-    <div class="card band-card">
-      <p class="eyebrow">${esc(S.season)} school year</p>
-      <h2 style="font-size:26px;margin:0">Your band: ${price ? gbp(price) + ' per gymnast' : 'set by your first order'}</h2>
-      <p class="muted" style="margin:6px 0 0">${price ? 'Fixed until the September review.' : 'Pricing: ' + BANDS.filter(b=>b.price).map(b => b.label + ' gymnasts ' + gbp(b.price)).join(' · ')}</p>
-      ${c.total ? `<div class="bar"><span style="width:${pct}%"></span></div>
-      <p style="margin:0">${next.price ? `On track for <b>${gbp(next.price)}</b> in ${esc(nextSeason(S.season))}.` : 'You’ve reached 1,000+, so we’ll agree commercial terms with you.'} <span class="muted">${esc(toNext)}</span></p>` : ''}
-      <div class="kpis">
-        <div class="kpi"><div class="v">${c.total.toLocaleString('en-GB')}</div><div class="l">Licences this year</div></div>
-        <div class="kpi"><div class="v">${S.schools.length}</div><div class="l">Schools</div></div>
-        <div class="kpi"><div class="v">${c.active.toLocaleString('en-GB')}</div><div class="l">Paid</div></div>
-        <div class="kpi"><div class="v">${c.pending.toLocaleString('en-GB')}</div><div class="l">Awaiting payment</div></div>
-      </div>
-    </div>
-
-    ${codeCardHTML()}
-
-    ${clubDetailsHTML()}
-
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-        <h2 style="margin:0">Your schools</h2>
-        <div class="btn-row"><button class="btn ghost small" data-act="add-school">+ Add school</button><button class="btn small" data-act="order">+ Add licences</button></div>
-      </div>
-      ${isNew ? '<p class="muted" style="margin:10px 0 0">No schools yet.</p>' : `<div class="table-wrap"><table>
-        <thead><tr><th>School</th><th class="num">Licences</th><th></th></tr></thead>
-        <tbody>
-          ${S.schools.map(s => `<tr><td>${esc(s.name)}</td><td class="num">${schoolCount(s.id)}</td><td class="num"><button class="btn ghost small" data-act="order" data-school="${s.id}">+ Add</button></td></tr>`).join('')}
-          <tr><td><b>Total registered</b></td><td class="num"><b>${c.total.toLocaleString('en-GB')}</b></td><td></td></tr>
-        </tbody>
-      </table></div>`}
-    </div>
-
-    <div class="grid2">
-      <div class="card">
-        <h3>Books, certificates &amp; T-shirts</h3>
-        <p class="muted">Order extra or replacement materials from the NGL shop.</p>
-        <table><tbody>${EXTRAS.slice(0,3).map(e => `<tr><td>${e.item}</td><td class="num">${gbp(e.price)}</td></tr>`).join('')}</tbody></table>
-        <a class="btn ghost small" style="margin-top:12px" href="${SHOP_URL}" target="_blank" rel="noopener">Go to the shop</a>
-      </div>
-    </div>
-    ${graduationsHTML()}
-  `);
-}
-
-function screenOrders(){
-  const orders = S.orders.slice().reverse();
-  render(`
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-        <div><h2 style="margin:0 0 4px">Licence orders</h2><p class="muted" style="margin:0">Each order has an invoice. Pay by bank transfer quoting the order number, and your code is switched on once payment arrives.</p></div>
-        <button class="btn small" data-act="order">+ Add licences</button>
-      </div>
-      <div class="table-wrap" style="margin-top:10px"><table>
-        <thead><tr><th>Order</th><th>School</th><th class="num">Qty</th><th class="num">Total</th><th>Status</th><th></th></tr></thead>
-        <tbody>${orders.map(o => {
-          const s = S.schools.find(x => x.id === o.schoolId);
-          return `<tr><td class="mono">${o.id}</td><td>${esc(s ? s.name : '')}</td><td class="num">${o.qty}</td><td class="num">${gbp(o.qty*o.price)}</td>
-            <td>${o.status==='paid'?'<span class="tag ok">Paid</span>':'<span class="tag wait">Awaiting payment</span>'}</td>
-            <td class="num"><div class="row-actions"><button class="btn ${o.status==='paid'?'ghost ':''}small" data-act="invoice" data-order="${esc(o.id)}">Invoice</button></div></td></tr>`;
-        }).join('') || '<tr><td colspan="6" class="muted">No orders yet.</td></tr>'}</tbody>
-      </table></div>
-    </div>`);
-}
-
 function screenProgramme(){ render(pitchHTML(true)); }
 
 function show(){
@@ -3255,51 +3244,209 @@ function addSchoolModal(){
     let s; try{ s = await api.addSchool(m.querySelector('#sn').value.trim()); }
     catch(err){ console.error(err); m.querySelector('#asf').insertAdjacentHTML('beforeend','<p class="error">Couldn’t save the school. Please try again.</p>'); return; }
     m.remove();
-    orderModal(s.id);
+    show();
   });
 }
 
-function orderModal(schoolId){
-  if(!S.schools.length){ return addSchoolModal(); }
-  const price = currentPrice();
-  const m = modal(`<h2>Add licences</h2>
-    <form id="of">
-      <div class="field"><label for="os">School</label><select class="input" id="os">${S.schools.map(s => `<option value="${s.id}" ${s.id===schoolId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
-      <div class="field"><label for="oq">How many gymnasts?</label><input class="input" id="oq" type="number" min="1" max="2000" value="30" required></div>
-      <div id="osum"></div>
+function licenceCardHTML(){
+  const st = licState(S.club, S.orders);
+  const al = st.key === 'active' ? bookAllowance(S.club, S.orders) : null;
+  const disc = S.club && otherLicencePrices(S.club).length ? '<p class="note" style="margin:8px 0 0">Your club already holds another NGL pathway licence, so you get 5% off this one if it isn’t your most expensive.</p>' : '';
+  let head, body = '', btns = '';
+  if(st.key === 'active'){
+    head = `Schools Club Licence: <span style="color:var(--ok)">Active</span>`;
+    body = `<p class="muted" style="margin:6px 0 0">${esc(st.band ? st.band.label : '')} · renews ${fmtDate(st.exp)}${st.days <= 45 ? ` <span class="tag wait">${st.days} days left</span>` : ''}</p>
+      <div class="kpis">
+        <div class="kpi"><div class="v">${st.band ? gbp(st.band.price) : '—'}</div><div class="l">Club Licence per year</div></div>
+        <div class="kpi"><div class="v">${al.used}</div><div class="l">Books this licence year</div></div>
+        <div class="kpi"><div class="v">${al.limit == null ? 'No limit' : al.left}</div><div class="l">Books left in your band</div></div>
+        <div class="kpi"><div class="v">${S.schools.length}</div><div class="l">Schools</div></div>
+      </div>`;
+    btns = `<button class="btn small" data-act="supplies">Order books, certificates &amp; t-shirts</button>${st.days <= 60 && !st.pending ? '<button class="btn ghost small" data-act="licence" data-kind="renew">Renew licence</button>' : ''}`;
+  }else if(st.key === 'awaiting'){
+    head = 'Schools Club Licence: awaiting payment';
+    body = '<p class="muted" style="margin:6px 0 0">Your licence order is placed. Pay the invoice by bank transfer quoting the order number, and your licence, family code and ordering switch on as soon as payment arrives.</p>';
+    btns = '<button class="btn ghost small" data-tab="orders">See your invoice</button>';
+  }else if(st.key === 'expired'){
+    head = 'Schools Club Licence: <span style="color:#ff8a95">Expired</span>';
+    body = `<p class="muted" style="margin:6px 0 0">Your licence ended on ${fmtDate(st.exp)}. Renew to keep your family code live and to order books and certificates.</p>`;
+    btns = '<button class="btn small" data-act="licence" data-kind="renew">Renew licence</button>';
+  }else{
+    head = 'Start your Schools Club Licence';
+    body = `<p class="muted" style="margin:6px 0 0">One yearly licence for your club, priced by how many Schools gymnasts you coach. From ${gbp(SCHOOLS_BANDS[0].price)} a year. It switches on your family code and lets you order books, certificates and t-shirts.</p>`;
+    btns = '<button class="btn small" data-act="licence" data-kind="start">Start your licence</button><button class="btn ghost small" data-tab="programme">See pricing</button>';
+  }
+  return `<div class="card band-card">
+    <p class="eyebrow">NGL Schools · Club Licence</p>
+    <h2 style="font-size:24px;margin:0">${head}</h2>
+    ${body}
+    ${disc}
+    <div class="btn-row" style="margin-top:14px">${btns}</div>
+  </div>`;
+}
+
+function screenDashboard(){
+  const isNew = !S.schools.length;
+  render(`
+    ${isNew ? `<div class="card" style="border-color:var(--schools)">
+      <p class="eyebrow">Welcome, ${esc(S.club.name)}</p>
+      <h2 style="margin:0 0 6px">Your Club Hub is ready</h2>
+      <p class="muted" style="margin:0 0 14px">Start your Schools Club Licence, then add the schools you work with so you can set up Graduations for them.</p>
+      <div class="btn-row"><button class="btn ghost" data-act="add-school">+ Add your first school</button><button class="btn ghost" data-tab="programme">See programme &amp; pricing</button></div>
+    </div>` : ''}
+
+    ${licenceCardHTML()}
+
+    ${codeCardHTML()}
+
+    ${clubDetailsHTML()}
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+        <h2 style="margin:0">Your schools</h2>
+        <button class="btn ghost small" data-act="add-school">+ Add school</button>
+      </div>
+      ${isNew ? '<p class="muted" style="margin:10px 0 0">No schools yet.</p>' : `<ul class="ticks" style="margin-top:8px">${S.schools.map(s => `<li>${esc(s.name)}</li>`).join('')}</ul>`}
+      <p class="note" style="margin:8px 0 0">Your schools are used for Graduations. You don’t need to tell us pupil numbers per school.</p>
+    </div>
+
+    ${graduationsHTML()}
+  `);
+}
+
+function screenOrders(){
+  const orders = S.orders.slice().sort((a,b) => toDate(b.createdAt) - toDate(a.createdAt));
+  const st = licState(S.club, S.orders);
+  render(`
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><h2 style="margin:0 0 4px">Orders &amp; invoices</h2><p class="muted" style="margin:0">Each order has an invoice. Pay by bank transfer quoting the order number.</p></div>
+        <div class="btn-row">${st.key === 'active' ? '<button class="btn small" data-act="supplies">Order supplies</button>' : (st.key === 'awaiting' ? '' : `<button class="btn small" data-act="licence" data-kind="${st.key === 'expired' ? 'renew' : 'start'}">${st.key === 'expired' ? 'Renew licence' : 'Start your licence'}</button>`)}</div>
+      </div>
+      <div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>Order</th><th>What</th><th class="num">Total</th><th>Status</th><th></th></tr></thead>
+        <tbody>${orders.map(o => `<tr><td class="mono">${esc(o.id)}</td><td>${esc(orderSummary(o))}</td><td class="num">${gbp(orderTotal(o))}</td>
+            <td>${o.status === 'paid' || o.status === 'sent' ? '<span class="tag ok">Paid</span>' : '<span class="tag wait">Awaiting payment</span>'}</td>
+            <td class="num"><div class="row-actions"><button class="btn ${o.status === 'paid' ? 'ghost ' : ''}small" data-act="invoice" data-order="${esc(o.id)}">Invoice</button></div></td></tr>`).join('') || '<tr><td colspan="5" class="muted">No orders yet.</td></tr>'}</tbody>
+      </table></div>
+    </div>`);
+}
+
+/* ---------- Licence (start / renew) ---------- */
+function licenceModal(kind){
+  const cur = S.club.schools && S.club.schools.band;
+  const m = modal(`<h2>${kind === 'renew' ? 'Renew your Schools Club Licence' : 'Start your Schools Club Licence'}</h2>
+    <form id="lf">
+      <div class="field"><label for="lb">How many Schools gymnasts does your club coach?</label>
+        <select class="input" id="lb">${SCHOOLS_BANDS.map(b => `<option value="${b.key}" ${(cur || 's') === b.key ? 'selected' : ''}>${b.label}: ${gbp(b.price)} a year</option>`).join('')}</select></div>
+      <p class="note" id="lnote"></p>
+      <div id="lsum"></div>
       <div class="btn-row" style="margin-top:14px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
     </form>`);
-  const q = m.querySelector('#oq');
-  const upd = () => {
-    const n = Math.max(0, parseInt(q.value || '0', 10));
-    const p = price ?? bandFor(n).price;
-    m.querySelector('#osum').innerHTML = `
-      <div class="sum"><span>${n} × ${gbp(p)} ${price ? `(your ${esc(S.season)} band)` : '(starting band)'}</span><span></span></div>
-      <div class="sum total"><span>Total</span><span>${p ? gbp(n*p) : 'Commercial agreement'}</span></div>
-      ${p ? '' : `<p class="note">For 1,000+ gymnasts please contact <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a> to agree terms.</p>`}`;
-    m.querySelector('#of button[type=submit]').disabled = !p || !(n > 0);
+  const sel = m.querySelector('#lb');
+  const lines = () => {
+    const b = bandOf(sel.value), L = [{kind:'club', desc:`NGL Schools Club Licence, ${b.label.replace(' Schools', '')} (12 months)`, qty:1, unit:b.price}];
+    const d = multiPathwayDiscount(S.club, b.price); if(d) L.push({kind:'discount', desc:'Multi-pathway discount (5%)', qty:1, unit:-d});
+    return L;
   };
-  q.addEventListener('input', upd); upd();
-  m.querySelector('#of').addEventListener('submit', async e => {
+  const upd = () => {
+    const b = bandOf(sel.value), L = lines();
+    m.querySelector('#lnote').innerHTML = `Includes up to ${b.books == null ? 'unlimited' : b.books} Awards Books in the licence year. ${kind === 'renew' && S.club.schools && S.club.schools.expires && toDate(S.club.schools.expires) > new Date() ? 'Your new year starts when your current licence ends.' : 'Your licence runs for 12 months from the day payment is received.'}`;
+    m.querySelector('#lsum').innerHTML = L.map(l => `<div class="sum"><span>${esc(l.desc)}</span><span>${gbp(l.unit)}</span></div>`).join('')
+      + `<div class="sum total"><span>Total</span><span>${gbp(L.reduce((a, l) => a + l.qty * l.unit, 0))}</span></div>`;
+  };
+  sel.addEventListener('change', upd); upd();
+  m.querySelector('#lf').addEventListener('submit', async e => {
     e.preventDefault();
-    const n = parseInt(q.value, 10); if(!(n > 0)) return;
-    const sb = m.querySelector('#of button[type=submit]'); sb.disabled = true; sb.textContent = 'Placing order…';
-    let o;
-    try{ o = await api.orderLicences(m.querySelector('#os').value, n); }
-    catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; m.querySelector('#osum').insertAdjacentHTML('beforeend','<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
-    m.innerHTML = `<div class="modal"><h2>Order ${o.id} placed</h2>
-      <p class="muted">${n} licences · ${gbp(n*o.price)}. Your invoice is ready: pay by bank transfer within ${INVOICE.termsDays} days quoting <b class="mono">${o.id}</b>. The licences count towards your total straight away.</p>
-      <div class="btn-row"><button class="btn" data-act="invoice" data-order="${esc(o.id)}">View invoice</button>
-      <button class="btn ghost" data-close>Done</button></div></div>`;
-    m.querySelector('.modal').insertAdjacentHTML('beforeend', `<p class="note" id="mailNote" style="margin:12px 0 0">${FIREBASE_CONFIG ? 'Emailing your invoice to ' + esc(S.club.email || '') + '…' : 'Preview mode: no email sent.'}</p>`);
-    m.querySelector('[data-close]').addEventListener('click', () => { m.remove(); show(); });
-    m.querySelector('[data-act="invoice"]').addEventListener('click', () => { m.remove(); show(); });
-    if(FIREBASE_CONFIG){
-      emailInvoice(o, S.club)
-        .then(() => { const n = document.getElementById('mailNote'); if(n){ n.style.color = 'var(--ok)'; n.textContent = '✓ Invoice emailed to ' + S.club.email + '.'; } })
-        .catch(err => { console.error(err); const n = document.getElementById('mailNote'); if(n) n.textContent = 'We couldn’t email the invoice just now, but you can view and download it here or from your Orders tab.'; });
-    }
+    const sb = m.querySelector('button[type=submit]'); sb.disabled = true; sb.textContent = 'Placing order…';
+    const L = lines();
+    let o; try{ o = await api.placeOrder({type:'club-licence', kind, band:sel.value, lines:L, total:L.reduce((a, l) => a + l.qty * l.unit, 0)}); }
+    catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; m.querySelector('#lsum').insertAdjacentHTML('beforeend', '<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
+    orderPlaced(m, o, 'Your licence and family code switch on as soon as payment is received.');
   });
+}
+
+/* ---------- Supplies (books, certificates, t-shirts) ---------- */
+function suppliesModal(){
+  if(!licActive()) return licenceModal(licState(S.club, S.orders).key === 'expired' ? 'renew' : 'start');
+  const al = bookAllowance(S.club, S.orders);
+  const book = shopItem('book'), cert = shopItem('cert'), shirt = shopItem('tshirt');
+  const m = modal(`<h2>Order books, certificates &amp; t-shirts</h2>
+    <form id="sf">
+      <div class="field"><label for="q_book">${esc(book.name)} (${gbp(book.price)} each, suggested ${esc(book.rrp)} to families)</label><input class="input" id="q_book" type="number" min="0" max="5000" value="0"></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        ${CERT_TYPES.map(c => `<div class="field"><label for="q_${c.key}">${c.name} certificates</label><input class="input" id="q_${c.key}" type="number" min="0" max="5000" value="0"></div>`).join('')}
+      </div>
+      <p class="note" style="margin:-6px 0 12px">Certificates ${gbp(cert.price)} each.</p>
+      <div class="field"><label for="q_tshirt">${esc(shirt.name)} (${gbp(shirt.price)} each, suggested ${esc(shirt.rrp)})</label><input class="input" id="q_tshirt" type="number" min="0" max="500" value="0"></div>
+      <div class="field"><label for="q_addr">Delivery address</label><textarea class="input" id="q_addr" rows="3" required>${esc(S.club.deliveryAddress || '')}</textarea></div>
+      <div id="sallow" class="note" style="margin:0 0 10px"></div>
+      <div id="ssum"></div>
+      <div class="btn-row" style="margin-top:14px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
+    </form>`);
+  const q = id => m.querySelector('#' + id);
+  const n = k => Math.max(0, parseInt(q('q_' + k).value) || 0);
+  let upgrade = false;
+  const state = () => {
+    const books = n('book'), over = al.limit != null && al.used + books > al.limit;
+    const target = nextBand(al.band.key), fits = target.books == null || al.used + books <= target.books;
+    return {books, over, target, fits};
+  };
+  const lines = () => {
+    const st = state(), L = [];
+    if(st.books) L.push({kind:'book', desc:book.name, qty:st.books, unit:book.price});
+    CERT_TYPES.forEach(c => { if(n(c.key)) L.push({kind:'cert', desc:`${c.name} certificate`, qty:n(c.key), unit:cert.price}); });
+    if(n('tshirt')) L.push({kind:'tshirt', desc:shirt.name, qty:n('tshirt'), unit:shirt.price});
+    if(upgrade && st.over){
+      const mr = monthsRemaining(S.club.schools), cost = upgradeCost(al.band.key, st.target.key, S.club.schools);
+      L.push({kind:'club', desc:`Club Licence upgrade, ${al.band.short} to ${st.target.short} gymnasts (${mr} month${mr === 1 ? '' : 's'} left on your licence)`, qty:1, unit:cost});
+      const d = multiPathwayDiscount(S.club, cost); if(d) L.push({kind:'discount', desc:'Multi-pathway discount (5%)', qty:1, unit:-d});
+    }
+    const items = L.filter(l => ['book','tshirt'].includes(l.kind)).reduce((a, l) => a + l.qty, 0) + Math.ceil(L.filter(l => l.kind === 'cert').reduce((a, l) => a + l.qty, 0) / 10);
+    const post = postageFor(items); if(post) L.push({kind:'postage', desc:`Postage and packing (${items} item${items === 1 ? '' : 's'})`, qty:1, unit:post});
+    return L;
+  };
+  const sum = () => {
+    const st = state(), L = lines(), tot = L.reduce((a, l) => a + l.qty * l.unit, 0);
+    let msg = al.limit == null ? 'No limit on Awards Books for your club size.' : `Awards Books: ${al.used + st.books} of ${al.limit} for this licence year.`;
+    if(st.over){
+      msg = `<b style="color:#ff8a95">That’s more books than your band allows (${al.limit} a licence year, ${al.used} used).</b><br>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="sup" ${upgrade ? 'checked' : ''}> Upgrade to ${esc(st.target.short)} gymnasts for ${gbp(upgradeCost(al.band.key, st.target.key, S.club.schools))} (the difference, for the months left on your licence)</label>`;
+      if(upgrade && !st.fits) msg += `<br>Even after upgrading that’s more than ${st.target.books} books. Please contact us.`;
+    }
+    q('sallow').innerHTML = msg;
+    const up = q('sup'); if(up) up.addEventListener('change', () => { upgrade = up.checked; sum(); });
+    q('ssum').innerHTML = L.map(l => `<div class="sum"><span>${esc(l.desc)}${l.qty > 1 ? ` × ${l.qty}` : ''}</span><span>${gbp(l.qty * l.unit)}</span></div>`).join('')
+      + `<div class="sum total"><span>Total</span><span>${gbp(tot)}</span></div>`;
+  };
+  m.querySelectorAll('input[type=number]').forEach(i => i.addEventListener('input', sum)); sum();
+  q('sf').addEventListener('submit', async e => {
+    e.preventDefault();
+    const st = state(), L = lines();
+    if(!L.some(l => ['book','cert','tshirt'].includes(l.kind))){ q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Add something to order.</p>'); return; }
+    if(st.over && !(upgrade && st.fits)){ q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Please sort out the book allowance above first.</p>'); return; }
+    const addr = q('q_addr').value.trim(); if(!addr){ q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Please add a delivery address.</p>'); return; }
+    const sb = m.querySelector('button[type=submit]'); sb.disabled = true; sb.textContent = 'Placing order…';
+    const order = {type:'supplies', lines:L, total:L.reduce((a, l) => a + l.qty * l.unit, 0), delivery:addr};
+    if(upgrade && st.over) order.upgradeTo = st.target.key;
+    let o; try{ if(addr !== (S.club.deliveryAddress || '')) await api.updateClub({deliveryAddress:addr}).catch(() => {}); o = await api.placeOrder(order); }
+    catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
+    orderPlaced(m, o, 'We send your order as soon as payment is received.');
+  });
+}
+
+function orderPlaced(m, o, extra){
+  m.querySelector('.modal').innerHTML = `<h2>Order ${esc(o.id)} placed</h2>
+    <p class="muted">${gbp(orderTotal(o))}. Pay by bank transfer within ${INVOICE.termsDays} days quoting <b class="mono">${esc(o.id)}</b>. ${esc(extra)}</p>
+    <div class="btn-row"><button class="btn" data-act="invoice" data-order="${esc(o.id)}">View invoice</button><button class="btn ghost" data-close>Done</button></div>
+    <p class="note" id="mailNote" style="margin:12px 0 0">${FIREBASE_CONFIG ? 'Emailing your invoice to ' + esc(S.club.email || '') + '…' : 'Preview mode: no email sent.'}</p>`;
+  m.querySelector('[data-close]').addEventListener('click', () => show());
+  m.querySelector('[data-act="invoice"]').addEventListener('click', () => { m.remove(); show(); });
+  if(FIREBASE_CONFIG){
+    emailInvoice(o, S.club)
+      .then(() => { const n = document.getElementById('mailNote'); if(n){ n.style.color = 'var(--ok)'; n.textContent = '✓ Invoice emailed to ' + S.club.email + '.'; } })
+      .catch(err => { console.error(err); const n = document.getElementById('mailNote'); if(n) n.textContent = 'We couldn’t email the invoice just now, but you can view and download it from your Orders tab.'; });
+  }
 }
 
 /* ---------- Sharing the club code ---------- */
@@ -3325,48 +3472,46 @@ async function screenAdmin(){
   try{ ADM = await api.adminLoad(); }
   catch(e){ render('<div class="card"><p class="error">Couldn’t load admin data. Check this account is listed in the admins collection.</p></div>'); return; }
   const clubById = Object.fromEntries(ADM.clubs.map(c => [c.id, c]));
-  const waiting = ADM.orders.filter(o => o.status !== 'paid');
-  const totals = {};
-  ADM.orders.filter(o => o.season === S.season && isLicence(o)).forEach(o => { totals[o.clubId] = (totals[o.clubId]||0) + o.qty; });
+  const waiting = ADM.orders.filter(o => o.status !== 'paid' && o.status !== 'sent');
   const orderRow = o => {
     const c = clubById[o.clubId] || {};
-    const band = c.bands && c.bands[o.season];
-    const warn = isLicence(o) && band && band !== o.price ? ` <span class="tag wait" title="Club band is ${gbp(band)}">Band is ${gbp(band)}</span>` : '';
-    return `<tr><td class="mono">${esc(o.id)}</td><td>${esc(o.clubName||c.name||'')}<div class="note">${esc(o.schoolName||'')}</div></td>
-      <td class="num">${o.qty}</td><td class="num">${gbp(o.price)}${warn}</td><td class="num"><b>${gbp(o.qty*o.price)}</b></td>
-      <td class="num"><div class="row-actions"><button class="btn ghost small" data-act="adm-invoice" data-order="${esc(o.id)}">Invoice</button>${o.status==='paid' ? '<span class="tag ok">Paid</span>' : `<button class="btn small" data-act="adm-paid" data-order="${esc(o.id)}">Mark paid</button>`}</div></td></tr>`;
+    return `<tr><td class="mono">${esc(o.id)}</td><td>${esc(o.clubName||c.name||'')}<div class="note">${esc(orderSummary(o))}</div>${o.delivery ? `<div class="note" style="white-space:pre-line">${esc(o.delivery)}</div>` : ''}</td>
+      <td class="num"><b>${gbp(orderTotal(o))}</b></td>
+      <td class="num"><div class="row-actions"><button class="btn ghost small" data-act="adm-invoice" data-order="${esc(o.id)}">Invoice</button>${o.status==='paid' || o.status==='sent' ? '<span class="tag ok">Paid</span>' : `<button class="btn small" data-act="adm-paid" data-order="${esc(o.id)}">Mark paid</button>`}</div></td></tr>`;
   };
   render(`
     <div class="card">
-      <p class="eyebrow">NGL admin</p>
+      <p class="eyebrow">NGL admin · Schools</p>
       <h2 style="margin:0 0 4px">Orders awaiting payment (${waiting.length})</h2>
-      <p class="muted">Check the payment has arrived in Squarespace (the club quotes the order number), then mark it paid. That switches on the club’s Hub code and, for its first order of the year, fixes its price band.</p>
+      <p class="muted">Check the payment has arrived in Wise (the club quotes the order number), then mark it paid. A Club Licence order switches the club’s licence and family code on for 12 months; an upgrade moves the club to its new band; supplies and Graduation medals are then ready to send.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Order</th><th>Club / school</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Total</th><th></th></tr></thead>
-        <tbody>${waiting.map(orderRow).join('') || '<tr><td colspan="6" class="muted">Nothing waiting.</td></tr>'}</tbody>
+        <thead><tr><th>Order</th><th>Club / what</th><th class="num">Total</th><th></th></tr></thead>
+        <tbody>${waiting.map(orderRow).join('') || '<tr><td colspan="4" class="muted">Nothing waiting.</td></tr>'}</tbody>
       </table></div>
     </div>
 
     <div class="card">
       <h2>Clubs (${ADM.clubs.length})</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Club</th><th>BG no.</th><th>Contact</th><th>Code</th><th class="num">${esc(S.season)} licences</th><th class="num">Band</th><th class="num">Next year</th><th></th></tr></thead>
+        <thead><tr><th>Club</th><th>BG no.</th><th>Contact</th><th>Family code</th><th>Schools Club Licence</th><th></th></tr></thead>
         <tbody>${ADM.clubs.map(c => {
-          const t = totals[c.id] || 0; const band = c.bands && c.bands[S.season]; const nx = t ? bandFor(t).price : null;
+          const st = licState(c, ADM.orders.filter(o => o.clubId === c.id));
+          const lic = st.key === 'active' ? `<span class="tag ok">${esc(st.band ? st.band.short : 'Active')}</span><div class="note">${st.band ? gbp(st.band.price) + ' · ' : ''}to ${fmtDate(st.exp)}</div>`
+            : st.key === 'expired' ? `<span class="tag wait">Expired</span><div class="note">${fmtDate(st.exp)}</div>`
+            : st.key === 'awaiting' ? '<span class="tag wait">Awaiting payment</span>' : '<span class="muted">None</span>';
           return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.bgNumber||'')}</td><td>${esc(c.contact||'')}<div class="note">${esc(c.email||'')}</div></td>
             <td class="mono">${esc(c.accessCode||'')} ${c.codeActive ? '<span class="tag ok">Live</span>' : '<span class="tag wait">Off</span>'}</td>
-            <td class="num">${t}</td><td class="num">${band ? gbp(band) : '<span class="muted">—</span>'}</td>
-            <td class="num">${nx ? (band && nx !== band ? `<span class="tag info">${gbp(nx)}</span>` : gbp(nx)) : '<span class="muted">—</span>'}</td>
+            <td>${lic}</td>
             <td class="num"><button class="btn ghost small" data-act="adm-edit-club" data-club="${esc(c.id)}">Edit</button></td></tr>`;
-        }).join('') || '<tr><td colspan="8" class="muted">No clubs yet.</td></tr>'}</tbody>
+        }).join('') || '<tr><td colspan="6" class="muted">No clubs yet.</td></tr>'}</tbody>
       </table></div>
     </div>
 
     <div class="card">
       <h2>All orders</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Order</th><th>Club / school</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Total</th><th></th></tr></thead>
-        <tbody>${ADM.orders.map(orderRow).join('') || '<tr><td colspan="6" class="muted">No orders yet.</td></tr>'}</tbody>
+        <thead><tr><th>Order</th><th>Club / what</th><th class="num">Total</th><th></th></tr></thead>
+        <tbody>${ADM.orders.map(orderRow).join('') || '<tr><td colspan="4" class="muted">No orders yet.</td></tr>'}</tbody>
       </table></div>
     </div>`);
 }
@@ -3473,11 +3618,17 @@ function orderDate(o){
   return new Date(c);
 }
 const fmtDate = d => d.toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'});
+function payNote(o){
+  if(o.type === 'club-licence') return o.kind === 'upgrade' ? 'Your new band applies as soon as payment is received.' : 'Your Schools Club Licence and family code switch on as soon as payment is received.';
+  if(o.type === 'supplies') return 'Your order is sent as soon as payment is received.' + (o.upgradeTo ? ' Your new band applies once payment is received.' : '');
+  if(o.type === 'graduation') return 'Your Graduation medals are sent as soon as payment is received.';
+  return 'Your club’s NGL Schools Hub code is switched on as soon as payment is received.';
+}
 function invoiceHTML(o, club){
   const issued = orderDate(o);
   const due = new Date(issued.getTime() + INVOICE.termsDays * 86400000);
-  const total = o.qty * o.price;
-  const paid = o.status === 'paid';
+  const L = orderLines(o), total = orderTotal(o);
+  const paid = o.status === 'paid' || o.status === 'sent';
   return `
   <div class="inv">
     <div class="inv-top">
@@ -3494,10 +3645,10 @@ function invoiceHTML(o, club){
     </div>
     <table class="inv-table">
       <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
-      <tbody><tr>
-        <td>${isLicence(o) ? `NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year` : `NGL Graduation medal &amp; place: ${esc(o.eventTitle || 'NGL Schools Graduation')}`}<br><span class="inv-sub">${esc(o.schoolName || '')}</span></td>
-        <td class="num">${o.qty}</td><td class="num">${gbp(o.price)}</td><td class="num">${gbp(total)}</td>
-      </tr></tbody>
+      <tbody>${L.map(l => `<tr>
+        <td>${esc(l.desc)}${l.sub ? `<br><span class="inv-sub">${esc(l.sub)}</span>` : ''}</td>
+        <td class="num">${l.qty}</td><td class="num">${gbp(l.unit)}</td><td class="num">${gbp(l.qty * l.unit)}</td>
+      </tr>`).join('')}</tbody>
       <tfoot>
         ${INVOICE.vatNote ? `<tr><td colspan="3" class="num">${esc(INVOICE.vatNote)}</td><td></td></tr>` : ''}
         <tr class="inv-total"><td colspan="3" class="num">Total due</td><td class="num">${gbp(total)}</td></tr>
@@ -3511,7 +3662,7 @@ function invoiceHTML(o, club){
         <tr><td>Account number</td><td><b>${esc(INVOICE.bank.accountNumber)}</b></td></tr>
         <tr><td>Payment reference</td><td><b class="inv-ref">${esc(o.id)}</b></td></tr>
       </table>
-      <p>Please use the payment reference exactly as shown so we can match your payment. ${isLicence(o) ? 'Your club’s NGL Schools Hub code is switched on as soon as payment is received.' : 'Your Graduation medals are sent as soon as payment is received.'}</p>
+      <p>Please use the payment reference exactly as shown so we can match your payment. ${payNote(o)}</p>
     </div>
     <div class="inv-foot">${esc(INVOICE.businessName)} · ${esc(INVOICE.email)} · nglschools.co.uk</div>
   </div>`;
@@ -3522,7 +3673,7 @@ const SITE_URL = 'https://nglschools.co.uk';
 function invoiceEmailHTML(o, club){
   const issued = orderDate(o);
   const due = new Date(issued.getTime() + INVOICE.termsDays * 86400000);
-  const total = o.qty * o.price;
+  const L = orderLines(o), total = orderTotal(o);
   const td = 'padding:6px 16px 6px 0;font-size:14px;color:#1c1f3a;';
   return `<div style="font-family:Arial,Helvetica,sans-serif;background:#f4f5fa;padding:20px 0;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;">
@@ -3530,7 +3681,7 @@ function invoiceEmailHTML(o, club){
 <tr><td style="background:#2a245f;padding:18px 24px;"><img src="${SITE_URL}/icons/logo-email.png" alt="NGL Schools" width="180" style="display:block;border:0;"></td></tr>
 <tr><td style="padding:24px;">
 <p style="margin:0 0 14px;font-size:15px;color:#1c1f3a;">Hello${club.contact ? ' ' + esc(club.contact.split(' ')[0]) : ''},</p>
-<p style="margin:0 0 18px;font-size:15px;color:#1c1f3a;">Thank you for your NGL Schools licence order. Your invoice is below.</p>
+<p style="margin:0 0 18px;font-size:15px;color:#1c1f3a;">Thank you for your NGL Schools order. Your invoice is below.</p>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:3px solid #f5d12f;padding-top:12px;margin-bottom:16px;">
 <tr><td style="font-size:22px;font-weight:bold;color:#2a245f;letter-spacing:2px;">INVOICE</td><td align="right" style="font-family:Consolas,Menlo,monospace;font-size:15px;font-weight:bold;color:#1c1f3a;">${esc(o.id)}</td></tr>
 </table>
@@ -3542,8 +3693,8 @@ function invoiceEmailHTML(o, club){
 </tr></table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px;">
 <tr style="background:#2a245f;color:#ffffff;font-size:11px;"><td style="padding:8px 10px;">DESCRIPTION</td><td align="right" style="padding:8px 10px;">QTY</td><td align="right" style="padding:8px 10px;">PRICE</td><td align="right" style="padding:8px 10px;">AMOUNT</td></tr>
-<tr style="font-size:14px;color:#1c1f3a;"><td style="padding:10px;border-bottom:1px solid #e3e4ee;">${isLicence(o) ? `NGL Schools annual gymnast licence, ${esc(o.season || S.season)} school year` : `NGL Graduation medal &amp; place: ${esc(o.eventTitle || 'NGL Schools Graduation')}`}<br><span style="color:#6b6f8f;font-size:12px;">${esc(o.schoolName || '')}</span></td>
-<td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${o.qty}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(o.price)}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(total)}</td></tr>
+${L.map(l => `<tr style="font-size:14px;color:#1c1f3a;"><td style="padding:10px;border-bottom:1px solid #e3e4ee;">${esc(l.desc)}${l.sub ? `<br><span style="color:#6b6f8f;font-size:12px;">${esc(l.sub)}</span>` : ''}</td>
+<td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${l.qty}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(l.unit)}</td><td align="right" style="padding:10px;border-bottom:1px solid #e3e4ee;">${gbp(l.qty * l.unit)}</td></tr>`).join('')}
 <tr style="background:#fdf6d3;font-size:16px;font-weight:bold;color:#1c1f3a;"><td colspan="3" align="right" style="padding:10px;">Total due</td><td align="right" style="padding:10px;">${gbp(total)}</td></tr>
 </table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5fa;border-left:4px solid #f5d12f;">
@@ -3555,7 +3706,7 @@ function invoiceEmailHTML(o, club){
 <tr><td style="${td}">Account number</td><td style="${td}"><b>${esc(INVOICE.bank.accountNumber)}</b></td></tr>
 <tr><td style="${td}">Payment reference</td><td style="${td}"><b style="font-family:Consolas,Menlo,monospace;background:#fdf6d3;padding:1px 6px;">${esc(o.id)}</b></td></tr>
 </table>
-<p style="margin:8px 0 0;font-size:12px;color:#4a4e6d;">Please use the payment reference exactly as shown so we can match your payment. ${isLicence(o) ? 'Your club’s NGL Schools Hub code is switched on as soon as payment is received.' : 'Your Graduation medals are sent as soon as payment is received.'}</p>
+<p style="margin:8px 0 0;font-size:12px;color:#4a4e6d;">Please use the payment reference exactly as shown so we can match your payment. ${payNote(o)}</p>
 </td></tr></table>
 <p style="margin:18px 0 0;font-size:13px;color:#4a4e6d;">You can download a PDF copy of this invoice at any time from the Orders tab of your <a href="${SITE_URL}/club/" style="color:#2a245f;font-weight:bold;">NGL Schools Club Hub</a>.</p>
 </td></tr>
@@ -3571,7 +3722,7 @@ async function emailInvoice(o, club){
       template_params: {
         to_email: club.email,
         to_name: club.contact || club.name || '',
-        subject: `NGL Schools invoice ${o.id} – ${gbp(o.qty * o.price)}`,
+        subject: `NGL Schools invoice ${o.id} – ${gbp(orderTotal(o))}`,
         invoice_html: invoiceEmailHTML(o, club)
       }
     })
@@ -3601,7 +3752,8 @@ document.addEventListener('click', async e => {
   const a = act.dataset.act;
   if(a === 'signout'){ await api.signOut(); signedIn = false; S.club = null; S.isAdmin = false; ADMIN_MODE ? screenLogin() : screenLanding(); }
   else if(a === 'add-school') addSchoolModal();
-  else if(a === 'order') orderModal(act.dataset.school);
+  else if(a === 'order' || a === 'licence') licenceModal(act.dataset.kind || (licState(S.club, S.orders).key === 'expired' ? 'renew' : 'start'));
+  else if(a === 'supplies') suppliesModal();
   else if(a === 'copy-msg') copyText(parentMessage(), 'Message copied. Paste it into your letter, email or WhatsApp.');
   else if(a === 'copy-link') copyText(hubLink(), 'Link copied.');
   else if(a === 'new-code'){
