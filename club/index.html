@@ -2965,6 +2965,7 @@ function pitchHTML(signedInView){
         <button class="btn" data-go="register">Register your club</button>
         <button class="btn ghost" data-go="login">Club login</button>
       </div>
+      <p class="muted" style="font-size:14px;margin-top:12px">Already have an NGL club account? Log in with it. Schools is a separate licence on the same account.</p>
     </div>
     <img src="data:image/jpeg;base64,${BOOK_COVER}" alt="NGL Schools Awards Book">
   </section>`}
@@ -3012,8 +3013,8 @@ function pitchHTML(signedInView){
   <div class="section card">
     <h2>Simple yearly Club Licence</h2>
     <p class="muted">Your club pays one licence a year, banded by how many Schools gymnasts you coach, with small clubs in mind. Books, certificates and t-shirts are ordered as you need them, and your licence pays for itself from what you sell to families.</p>
-    <p class="muted">Full pricing is in the Club Hub. Register your club and you’ll see it straight away.</p>
-    <button class="btn" data-go="register">Register your club</button>
+    <p class="muted">From £150 a year depending on how many Schools gymnasts you coach.</p>
+    <div class="btn-row"><button class="btn" data-go="register">Register your club</button><a class="btn ghost" href="https://club.nationalgymnasticsleague.co.uk/licences.html" target="_blank" rel="noopener">See all licence fees ↗</a></div>
   </div>`}
   ${!signedInView ? '' : `
   <div class="section card">
