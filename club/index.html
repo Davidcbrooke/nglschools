@@ -2565,17 +2565,18 @@ const INVOICE = {
 /* ---------- Pricing (Oct 2026) ----------
    One yearly Schools Club Licence per club, banded by the number of Schools gymnasts. It runs
    12 months from the day NGL confirms payment. Books, certificates and t-shirts are ordered
-   here while the licence is active. Each band can buy books up to 10% above its top gymnast
-   number per licence year; past that the club upgrades to the next band for the difference,
-   pro-rata for the months left. Same bands as NGL Recreational (Recreational is priced higher). */
+   here while the licence is active. The band is set by the number of children the club
+   enters for each of its schools (numbers only, no names), confirmed at start and renewal.
+   If the total grows past the band, the club upgrades for the difference, pro-rata for the
+   months left. No limit on books. Same bands as NGL Recreational (Recreational is priced higher). */
 const SCHOOLS_BANDS = [
-  {key:'xs', label:'1 to 24 Schools gymnasts',    short:'1–24',    price:150,  books:27},
-  {key:'sm', label:'25 to 49 Schools gymnasts',   short:'25–49',   price:250,  books:54},
-  {key:'s',  label:'50 to 99 Schools gymnasts',   short:'50–99',   price:400,  books:109},
-  {key:'m',  label:'100 to 249 Schools gymnasts', short:'100–249', price:750,  books:274},
-  {key:'m2', label:'250 to 399 Schools gymnasts', short:'250–399', price:1000, books:439},
-  {key:'l',  label:'400 to 599 Schools gymnasts', short:'400–599', price:1250, books:659},
-  {key:'xl', label:'600 or more Schools gymnasts', short:'600+',   price:1500, books:null}   // null = no limit
+  {key:'xs', label:'1 to 24 Schools gymnasts',    short:'1–24',    price:150,  max:24},
+  {key:'sm', label:'25 to 49 Schools gymnasts',   short:'25–49',   price:250,  max:49},
+  {key:'s',  label:'50 to 99 Schools gymnasts',   short:'50–99',   price:400,  max:99},
+  {key:'m',  label:'100 to 249 Schools gymnasts', short:'100–249', price:750,  max:249},
+  {key:'m2', label:'250 to 399 Schools gymnasts', short:'250–399', price:1000, max:399},
+  {key:'l',  label:'400 to 599 Schools gymnasts', short:'400–599', price:1250, max:599},
+  {key:'xl', label:'600 or more Schools gymnasts', short:'600+',   price:1500, max:null}   // null = no top
 ];
 const PRICES = [
   {kind:'book',   name:'NGL Schools Awards Book', price:5,    rrp:'£10',        note:'Six levels; lasts more than a year'},
@@ -2622,14 +2623,16 @@ function licState(club, orders, now = new Date()){
   return {key: pending ? 'awaiting' : 'none', band: lic ? bandOf(lic.band) : null, pending};
 }
 const licActive = () => licState(S.club, S.orders).key === 'active';
-/* Book allowance: books in the order that started or renewed the licence, and every order since. */
-function bookAllowance(club, orders){
-  const band = bandOf(club && club.schools && club.schools.band) || SCHOOLS_BANDS[0];
-  const lic = (orders || []).filter(o => o.type === 'club-licence' && (o.kind === 'start' || o.kind === 'renew')).sort((a,b) => toDate(b.createdAt) - toDate(a.createdAt))[0];
-  const from = lic ? toDate(lic.createdAt) : new Date(0);
-  const used = (orders || []).filter(o => toDate(o.createdAt) >= from)
-    .reduce((a, o) => a + (o.lines || []).filter(l => l.kind === 'book').reduce((x, l) => x + l.qty, 0), 0);
-  return {band, used, limit: band.books, left: band.books == null ? Infinity : Math.max(0, band.books - used)};
+/* Band from children: the total across the club's schools (numbers only) sets the band. */
+const bandIndex = k => SCHOOLS_BANDS.findIndex(b => b.key === k);
+const bandForCount = n => SCHOOLS_BANDS.find(b => b.max == null || n <= b.max);
+const childrenTotal = (schools = S.schools) => (schools || []).reduce((a, s) => a + (parseInt(s.children) || 0), 0);
+// Is the club's active band too small for its children? (pending = upgrade already ordered)
+function bandCheck(club = S.club, schools = S.schools, orders = S.orders){
+  const count = childrenTotal(schools), need = bandForCount(count);
+  const cur = bandOf(club && club.schools && club.schools.band);
+  const pending = (orders || []).find(o => o.type === 'club-licence' && o.kind === 'upgrade' && o.status !== 'paid' && o.status !== 'sent');
+  return {count, need, cur, over: !!cur && bandIndex(need.key) > bandIndex(cur.key), pending};
 }
 function otherLicencePrices(club, now = new Date()){
   return Object.keys(OTHER_PATHWAY_PRICES).map(k => {
@@ -2687,9 +2690,10 @@ function newAccessCode(clubName){
      clubs/{uid}                 name, bgNumber, contact, email, accessCode, deliveryAddress,
                                  schools{status, band, season, expires, activatedAt} (NGL admin only),
                                  codeActive (NGL admin only), bands{} (old per-gymnast model), createdAt
-     clubs/{uid}/schools/{id}    name, createdAt
+     clubs/{uid}/schools/{id}    name, children (number only), createdAt
+     clubs/{uid}.schoolsChildren total children across schools (for NGL admin)
      orders/{ORD-XXXXX}          clubId, clubName, type 'club-licence'|'supplies'|'graduation'
-                                 (|'licence' = old per-gymnast), kind start|renew, band, upgradeTo,
+                                 (|'licence' = old per-gymnast), kind start|renew|upgrade, band, upgradeTo, declaredChildren,
                                  lines[{kind, desc, qty, unit}], total, delivery, season, status
      accessCodes/{CODE}          clubId, clubName, season, status 'active'|'inactive'
      admins/{uid}                (exists = NGL admin)
@@ -2740,6 +2744,10 @@ async function loadClubData(uid){
   S.isAdmin = !!(adminSnap && adminSnap.exists());
   S.schools = schoolsSnap.docs.map(d => ({id:d.id, ...d.data()})).sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
   S.orders = ordersSnap.docs.map(d => ({id:d.id, ...d.data()})).sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
+}
+async function syncChildren(){
+  const n = childrenTotal();
+  if(S.club && S.club.schoolsChildren !== n){ await api.updateClub({schoolsChildren:n}).catch(e => console.error(e)); S.club.schoolsChildren = n; }
 }
 async function claimNewCode(clubName, active, clubId){
   clubId = clubId || S.uid;
@@ -2793,10 +2801,17 @@ const liveApi = {
     }catch(e){ return {ok:false, reason:friendlyAuthError(e)}; }
   },
   async signOut(){ const {auth, A} = await fb(); await auth.signOut(A); },
-  async addSchool(name){
+  async addSchool(name, children){
     const {fs, D} = await fb();
-    const ref = await fs.addDoc(fs.collection(D, 'clubs', S.uid, 'schools'), {name, createdAt:fs.serverTimestamp()});
-    const s = {id:ref.id, name}; S.schools.push(s); return s;
+    const ref = await fs.addDoc(fs.collection(D, 'clubs', S.uid, 'schools'), {name, children, createdAt:fs.serverTimestamp()});
+    const s = {id:ref.id, name, children}; S.schools.push(s);
+    await syncChildren(); return s;
+  },
+  async updateSchool(id, d){
+    const {fs, D} = await fb();
+    await fs.updateDoc(fs.doc(D, 'clubs', S.uid, 'schools', id), {...d, updatedAt:fs.serverTimestamp()});
+    Object.assign(S.schools.find(s => s.id === id), d);
+    await syncChildren();
   },
   async placeOrder(o){
     const {fs, D} = await fb();
@@ -2896,7 +2911,8 @@ const demoApi = {
     S.club.schools = {status:'active', band:'m2', season:S.season, expires:new Date(Date.now() + 300 * 86400000)};
     S.club.deliveryAddress = 'SAADI Gymnastics\nHarpenden\nAL5';
     S.schools = []; S.orders = []; S.events = [];
-    ['Brookfield Primary','St Mary’s C of E Primary','Oakwood Junior School','Hillside Infants'].forEach((n,i) => S.schools.push({id:'s'+(i+1), name:n}));
+    [['Brookfield Primary',90],['St Mary’s C of E Primary',75],['Oakwood Junior School',80],['Hillside Infants',60]].forEach(([n,c],i) => S.schools.push({id:'s'+(i+1), name:n, children:c}));
+    S.club.schoolsChildren = childrenTotal();
     S.orders.push({id:'ORD-1001', type:'club-licence', kind:'start', band:'m2', clubId:'demo', clubName:S.club.name, season:S.season, status:'paid', createdAt:new Date(Date.now() - 65 * 86400000),
       lines:[{kind:'club', desc:'NGL Schools Club Licence, 250 to 399 gymnasts (12 months)', qty:1, unit:1000}]});
     S.orders.push({id:'ORD-1002', type:'supplies', clubId:'demo', clubName:S.club.name, season:S.season, status:'paid', createdAt:new Date(Date.now() - 60 * 86400000),
@@ -2906,7 +2922,8 @@ const demoApi = {
   async resetPassword(){ return {ok:true}; },
   async register(d){ S.club = makeClub(d.name, d.contact, d.email); S.isAdmin = false; S.schools = []; S.orders = []; S.events = []; return {ok:true}; },
   async signOut(){},
-  async addSchool(name){ const s = {id:'s' + (S.schools.length + 1), name}; S.schools.push(s); return s; },
+  async addSchool(name, children){ const s = {id:'s' + (S.schools.length + 1), name, children}; S.schools.push(s); S.club.schoolsChildren = childrenTotal(); return s; },
+  async updateSchool(id, d){ Object.assign(S.schools.find(s => s.id === id), d); S.club.schoolsChildren = childrenTotal(); },
   async placeOrder(o){ const local = {id:orderRef(), ...o, clubId:'demo', clubName:S.club.name, season:S.season, status:'awaiting-payment', createdAt:new Date()}; S.orders.push(local); return local; },
   async orderGraduation(ev, qty){
     const o = {id:orderRef(), type:'graduation', clubId:'demo', clubName:S.club.name, eventId:ev.id, eventTitle:ev.title || 'NGL Schools Graduation', eventDate:ev.date || '',
@@ -2982,7 +2999,7 @@ function pitchHTML(signedInView){
     <h2>How it works</h2>
     <div class="grid3 steps">
       <div class="card step"><h3>Choose your size</h3><p class="muted">Start one yearly Club Licence, banded by how many Schools gymnasts you coach. No names or pupil details needed.</p></div>
-      <div class="card step"><h3>Get your club code</h3><p class="muted">Your club gets one NGL Schools Hub code to share with all your Schools families.</p></div>
+      <div class="card step"><h3>Get your club code</h3><p class="muted">Your club gets one NGL Schools family app code to share with all your Schools families.</p></div>
       <div class="card step"><h3>Families join in</h3><p class="muted">Parents enter your club code to watch the routines and follow the programme at home.</p></div>
     </div>
   </div>
@@ -2994,7 +3011,7 @@ function pitchHTML(signedInView){
         <li>An NGL Schools Awards Book</li>
         <li>Bronze, Silver and Gold certificates</li>
         <li>A structured six-level programme across Floor, Bench and Vault</li>
-        <li>Family access to the NGL Schools Hub: routines, videos and events</li>
+        <li>Family access to the NGL Schools family app: routines, videos and events</li>
         <li>The chance to perform at an NGL Graduation</li>
       </ul>
     </div>
@@ -3021,12 +3038,14 @@ function pitchHTML(signedInView){
     <h2>Schools Club Licence, per year</h2>
     <p class="muted">One yearly licence for your club, whatever the number of schools. It switches on your family code and lets you order Awards Books, certificates and t-shirts. It runs for 12 months from the day payment is received.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Schools gymnasts at your club</th><th class="num">Per year</th><th class="num">Awards Books per licence year</th></tr></thead>
-      <tbody>${SCHOOLS_BANDS.map(b => `<tr ${S.club && S.club.schools && S.club.schools.band === b.key ? 'class="hl"' : ''}><td>${b.label.replace(' Schools gymnasts', '')}</td><td class="num"><b>${gbp(b.price)}</b></td><td class="num">${b.books == null ? 'No limit' : 'Up to ' + b.books}</td></tr>`).join('')}</tbody>
+      <thead><tr><th>Schools gymnasts at your club</th><th class="num">Per year</th><th class="num">Price per gymnast</th></tr></thead>
+      <tbody>${SCHOOLS_BANDS.map(b => `<tr ${S.club && S.club.schools && S.club.schools.band === b.key ? 'class="hl"' : ''}><td>${b.label.replace(' Schools gymnasts', '')}</td><td class="num"><b>${gbp(b.price)}</b></td><td class="num">${b.max == null ? gbp(Math.round(b.price / (SCHOOLS_BANDS[SCHOOLS_BANDS.length - 2].max + 1) * 100) / 100) + ' or less' : 'From ' + gbp(Math.round(b.price / b.max * 100) / 100)}</td></tr>`).join('')}</tbody>
     </table></div>
     <ul class="ticks" style="margin-top:14px">
       <li><b>Running more than one NGL pathway?</b> You get 5% off every pathway licence except your most expensive one.</li>
-      <li><b>Growing?</b> If you need more books than your band allows, upgrade to the next band at any time. You pay the difference for the months left on your licence, and your renewal date stays the same.</li>
+      <li><b>Your band comes from your schools.</b> In the Club Hub you list each school and how many children take part (numbers only, no names). You confirm the total when you start or renew, and NGL may ask for evidence such as a register count.</li>
+      <li><b>Growing?</b> If your total moves into the next band, upgrade at any time. You pay the difference for the months left on your licence, and your renewal date stays the same. Fewer children at renewal? You drop to the lower band.</li>
+      <li><b>No limit on books.</b> Order Awards Books, certificates and t-shirts whenever you need them.</li>
       <li><b>Pays for itself.</b> Buy Awards Books at ${gbp(shopItem('book').price)} and sell them to families at ${esc(shopItem('book').rrp)}: ${Math.ceil(SCHOOLS_BANDS[0].price / (10 - shopItem('book').price))} books covers the smallest licence.</li>
     </ul>
     <h3 style="margin-top:18px">Books, certificates and t-shirts</h3>
@@ -3091,7 +3110,7 @@ function screenLogin(msg){
         <button class="btn block" type="submit">Sign in</button>
       </form>
       <p class="note" style="margin-top:14px;text-align:center">New to NGL? <a href="#" data-go="register">Create your club account</a><br><a href="#" data-act="reset">Forgotten your password?</a></p>
-      <p class="note" style="text-align:center">Looking for your child’s routines? <a href="${PARENT_HUB_URL}">Open the parent Schools Hub</a></p>
+      <p class="note" style="text-align:center">Looking for your child’s routines? <a href="${PARENT_HUB_URL}">Open the Schools family app</a></p>
     </div>`);
   { const pre = new URLSearchParams(location.search).get('email'); const el = document.getElementById('em'); if(pre && el && !el.value) el.value = pre; }
   document.getElementById('loginForm').addEventListener('submit', async e => {
@@ -3200,10 +3219,10 @@ function codeCardHTML(){
     <div class="card code-card">
       <div class="code-grid">
         <div>
-          <p class="eyebrow">Your NGL Schools Hub code</p>
+          <p class="eyebrow">Your NGL Schools family app code</p>
           <div class="club-code mono">${esc(S.club.accessCode)}</div>
           <p style="margin:8px 0 0">${live ? '<span class="tag ok">Live</span>' : '<span class="tag wait">Goes live when your first licence payment is confirmed</span>'}</p>
-          <p class="muted" style="margin:12px 0 14px">Share this one code with all your Schools families, for example in your welcome letter, class WhatsApp or newsletter. Parents enter it at the Schools Hub to see the routines, videos and events.</p>
+          <p class="muted" style="margin:12px 0 14px">Share this one code with all your Schools families, for example in your welcome letter, class WhatsApp or newsletter. Parents enter it in the Schools family app to see the routines, videos and events.</p>
           <div class="btn-row">
             <button class="btn small" data-act="copy-msg">Copy message for parents</button>
             <button class="btn ghost small" data-act="copy-link">Copy link</button>
@@ -3235,14 +3254,18 @@ function modal(html){
   document.body.appendChild(bg); return bg;
 }
 
-function addSchoolModal(){
-  const m = modal(`<h2>Add a school</h2>
-    <form id="asf"><div class="field"><label for="sn">School name</label><input class="input" id="sn" required></div>
-    <div class="btn-row"><button class="btn" type="submit">Add school</button><button class="btn ghost" type="button" data-close>Cancel</button></div></form>`);
+function addSchoolModal(id){
+  const sc = id ? S.schools.find(s => s.id === id) : null;
+  const m = modal(`<h2>${sc ? 'Edit school' : 'Add a school'}</h2>
+    <form id="asf"><div class="field"><label for="sn">School name</label><input class="input" id="sn" required value="${esc(sc ? sc.name : '')}"></div>
+    <div class="field"><label for="sc">How many children take part at this school?</label><input class="input" id="sc" type="number" min="0" max="5000" required value="${sc ? (parseInt(sc.children) || 0) : ''}"></div>
+    <p class="note">Just the number, no names. Your club’s total across all schools sets your licence band.</p>
+    <div class="btn-row"><button class="btn" type="submit">${sc ? 'Save' : 'Add school'}</button><button class="btn ghost" type="button" data-close>Cancel</button></div></form>`);
   m.querySelector('#sn').focus();
   m.querySelector('#asf').addEventListener('submit', async e => {
     e.preventDefault();
-    let s; try{ s = await api.addSchool(m.querySelector('#sn').value.trim()); }
+    const name = m.querySelector('#sn').value.trim(), children = Math.max(0, parseInt(m.querySelector('#sc').value) || 0);
+    try{ if(sc) await api.updateSchool(sc.id, {name, children}); else await api.addSchool(name, children); }
     catch(err){ console.error(err); m.querySelector('#asf').insertAdjacentHTML('beforeend','<p class="error">Couldn’t save the school. Please try again.</p>'); return; }
     m.remove();
     show();
@@ -3251,7 +3274,7 @@ function addSchoolModal(){
 
 function licenceCardHTML(){
   const st = licState(S.club, S.orders);
-  const al = st.key === 'active' ? bookAllowance(S.club, S.orders) : null;
+  const bc = bandCheck();
   const disc = S.club && otherLicencePrices(S.club).length ? '<p class="note" style="margin:8px 0 0">Your club already holds another NGL pathway licence, so you get 5% off this one if it isn’t your most expensive.</p>' : '';
   let head, body = '', btns = '';
   if(st.key === 'active'){
@@ -3259,10 +3282,14 @@ function licenceCardHTML(){
     body = `<p class="muted" style="margin:6px 0 0">${esc(st.band ? st.band.label : '')} · renews ${fmtDate(st.exp)}${st.days <= 45 ? ` <span class="tag wait">${st.days} days left</span>` : ''}</p>
       <div class="kpis">
         <div class="kpi"><div class="v">${st.band ? gbp(st.band.price) : '—'}</div><div class="l">Club Licence per year</div></div>
-        <div class="kpi"><div class="v">${al.used}</div><div class="l">Books this licence year</div></div>
-        <div class="kpi"><div class="v">${al.limit == null ? 'No limit' : al.left}</div><div class="l">Books left in your band</div></div>
+        <div class="kpi"><div class="v">${bc.count}</div><div class="l">Children in your schools</div></div>
         <div class="kpi"><div class="v">${S.schools.length}</div><div class="l">Schools</div></div>
-      </div>`;
+      </div>
+      ${bc.over ? (bc.pending
+        ? `<p class="note" style="margin:10px 0 0">Your band upgrade to ${esc(bandOf(bc.pending.upgradeTo).short)} is awaiting payment (order ${esc(bc.pending.id)}).</p>`
+        : `<div class="note" style="margin:10px 0 0;color:#ff8a95"><b>Your schools now have ${bc.count} children, which is in the ${esc(bc.need.short)} band.</b> Please upgrade: you pay ${gbp(upgradeCost(bc.cur.key, bc.need.key, S.club.schools))}, the difference for the months left on your licence. Your renewal date stays the same.</div>`) : ''}`;
+    if(bc.over && !bc.pending) btns = '<button class="btn small" data-act="upgrade">Upgrade your band</button>';
+    else
     btns = `<button class="btn small" data-act="supplies">Order books, certificates &amp; t-shirts</button>${st.days <= 60 && !st.pending ? '<button class="btn ghost small" data-act="licence" data-kind="renew">Renew licence</button>' : ''}`;
   }else if(st.key === 'awaiting'){
     head = 'Schools Club Licence: awaiting payment';
@@ -3292,8 +3319,8 @@ function screenDashboard(){
     ${isNew ? `<div class="card" style="border-color:var(--schools)">
       <p class="eyebrow">Welcome, ${esc(S.club.name)}</p>
       <h2 style="margin:0 0 6px">Your Club Hub is ready</h2>
-      <p class="muted" style="margin:0 0 14px">Start your Schools Club Licence, then add the schools you work with so you can set up Graduations for them.</p>
-      <div class="btn-row"><button class="btn ghost" data-act="add-school">+ Add your first school</button><button class="btn ghost" data-tab="programme">See programme &amp; pricing</button></div>
+      <p class="muted" style="margin:0 0 14px">Add the schools you work with and how many children take part at each. Your total sets your licence band, then start your Schools Club Licence.</p>
+      <div class="btn-row"><button class="btn" data-act="add-school">+ Add your first school</button><button class="btn ghost" data-tab="programme">See programme &amp; pricing</button></div>
     </div>` : ''}
 
     ${licenceCardHTML()}
@@ -3307,8 +3334,12 @@ function screenDashboard(){
         <h2 style="margin:0">Your schools</h2>
         <button class="btn ghost small" data-act="add-school">+ Add school</button>
       </div>
-      ${isNew ? '<p class="muted" style="margin:10px 0 0">No schools yet.</p>' : `<ul class="ticks" style="margin-top:8px">${S.schools.map(s => `<li>${esc(s.name)}</li>`).join('')}</ul>`}
-      <p class="note" style="margin:8px 0 0">Your schools are used for Graduations. You don’t need to tell us pupil numbers per school.</p>
+      ${isNew ? '<p class="muted" style="margin:10px 0 0">No schools yet.</p>' : `<div class="table-wrap" style="margin-top:8px"><table>
+        <thead><tr><th>School</th><th class="num">Children</th><th></th></tr></thead>
+        <tbody>${S.schools.map(s => `<tr><td>${esc(s.name)}</td><td class="num">${s.children == null || s.children === '' ? '<span class="tag wait">Add number</span>' : (parseInt(s.children) || 0)}</td><td class="num"><button class="btn ghost small" data-act="edit-school" data-school="${esc(s.id)}">Edit</button></td></tr>`).join('')}
+          <tr><td><b>Total</b></td><td class="num"><b>${childrenTotal()}</b></td><td></td></tr></tbody>
+      </table></div>`}
+      <p class="note" style="margin:8px 0 0">Just numbers, no names. Keep these up to date: your total sets your licence band, and your schools are used for Graduations.</p>
     </div>
 
     ${graduationsHTML()}
@@ -3335,42 +3366,71 @@ function screenOrders(){
 
 /* ---------- Licence (start / renew) ---------- */
 function licenceModal(kind){
-  const cur = S.club.schools && S.club.schools.band;
-  const m = modal(`<h2>${kind === 'renew' ? 'Renew your Schools Club Licence' : 'Start your Schools Club Licence'}</h2>
-    <form id="lf">
-      <div class="field"><label for="lb">How many Schools gymnasts does your club coach?</label>
-        <select class="input" id="lb">${SCHOOLS_BANDS.map(b => `<option value="${b.key}" ${(cur || 's') === b.key ? 'selected' : ''}>${b.label}: ${gbp(b.price)} a year</option>`).join('')}</select></div>
-      <p class="note" id="lnote"></p>
-      <div id="lsum"></div>
-      <div class="btn-row" style="margin-top:14px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
-    </form>`);
-  const sel = m.querySelector('#lb');
+  const count = childrenTotal(), b = bandForCount(count);
+  if(!S.schools.length || !count){
+    const m0 = modal(`<h2>First, add your schools</h2>
+      <p class="muted">Your licence band is set by how many children take part across your schools. Add each school and its number of children (no names), then start your licence.</p>
+      <div class="btn-row"><button class="btn" id="m0add">+ Add a school</button><button class="btn ghost" data-close>Cancel</button></div>`);
+    m0.querySelector('#m0add').addEventListener('click', () => { m0.remove(); addSchoolModal(); });
+    return;
+  }
   const lines = () => {
-    const b = bandOf(sel.value), L = [{kind:'club', desc:`NGL Schools Club Licence, ${b.label.replace(' Schools', '')} (12 months)`, qty:1, unit:b.price}];
+    const L = [{kind:'club', desc:`NGL Schools Club Licence, ${b.label.replace(' Schools', '')} (12 months)`, qty:1, unit:b.price}];
     const d = multiPathwayDiscount(S.club, b.price); if(d) L.push({kind:'discount', desc:'Multi-pathway discount (5%)', qty:1, unit:-d});
     return L;
   };
-  const upd = () => {
-    const b = bandOf(sel.value), L = lines();
-    m.querySelector('#lnote').innerHTML = `Includes up to ${b.books == null ? 'unlimited' : b.books} Awards Books in the licence year. ${kind === 'renew' && S.club.schools && S.club.schools.expires && toDate(S.club.schools.expires) > new Date() ? 'Your new year starts when your current licence ends.' : 'Your licence runs for 12 months from the day payment is received.'}`;
-    m.querySelector('#lsum').innerHTML = L.map(l => `<div class="sum"><span>${esc(l.desc)}</span><span>${gbp(l.unit)}</span></div>`).join('')
-      + `<div class="sum total"><span>Total</span><span>${gbp(L.reduce((a, l) => a + l.qty * l.unit, 0))}</span></div>`;
-  };
-  sel.addEventListener('change', upd); upd();
+  const L = lines(), total = L.reduce((a, l) => a + l.qty * l.unit, 0);
+  const m = modal(`<h2>${kind === 'renew' ? 'Renew your Schools Club Licence' : 'Start your Schools Club Licence'}</h2>
+    <form id="lf">
+      <div class="table-wrap"><table><tbody>
+        ${S.schools.map(s => `<tr><td>${esc(s.name)}</td><td class="num">${parseInt(s.children) || 0}</td></tr>`).join('')}
+        <tr><td><b>Total children</b></td><td class="num"><b>${count}</b></td></tr>
+      </tbody></table></div>
+      <p class="muted" style="margin:10px 0">That puts your club in the <b>${esc(b.short)}</b> band: <b>${gbp(b.price)} a year</b>. Numbers wrong? <button class="link" type="button" data-close>Update your schools</button> first.</p>
+      ${L.map(l => `<div class="sum"><span>${esc(l.desc)}</span><span>${gbp(l.unit)}</span></div>`).join('')}
+      <div class="sum total"><span>Total</span><span>${gbp(total)}</span></div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin:14px 0 0"><input type="checkbox" id="ldec" required style="width:auto;margin-top:3px">
+        <span>I confirm about ${count} children take part in NGL Schools with our club. We’ll update our numbers if they grow, and NGL may ask us for evidence, such as a register count.</span></label>
+      <p class="note">${kind === 'renew' && S.club.schools && S.club.schools.expires && toDate(S.club.schools.expires) > new Date() ? 'Your new year starts when your current licence ends.' : 'Your licence runs for 12 months from the day payment is received.'} No limit on the books you order.</p>
+      <div id="lsum"></div>
+      <div class="btn-row" style="margin-top:14px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
+    </form>`);
   m.querySelector('#lf').addEventListener('submit', async e => {
     e.preventDefault();
+    if(!m.querySelector('#ldec').checked) return;
     const sb = m.querySelector('button[type=submit]'); sb.disabled = true; sb.textContent = 'Placing order…';
-    const L = lines();
-    let o; try{ o = await api.placeOrder({type:'club-licence', kind, band:sel.value, lines:L, total:L.reduce((a, l) => a + l.qty * l.unit, 0)}); }
+    let o; try{ o = await api.placeOrder({type:'club-licence', kind, band:b.key, declaredChildren:count, declaredSchools:S.schools.length, lines:L, total}); }
     catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; m.querySelector('#lsum').insertAdjacentHTML('beforeend', '<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
     orderPlaced(m, o, 'Your licence and family code switch on as soon as payment is received.');
+  });
+}
+
+/* ---------- Band upgrade (children have grown past the band) ---------- */
+function upgradeModal(){
+  const bc = bandCheck(); if(!bc.over || bc.pending) return show();
+  const mr = monthsRemaining(S.club.schools), cost = upgradeCost(bc.cur.key, bc.need.key, S.club.schools);
+  const L = [{kind:'club', desc:`Club Licence upgrade, ${bc.cur.short} to ${bc.need.short} Schools gymnasts (${mr} month${mr === 1 ? '' : 's'} left on your licence)`, qty:1, unit:cost}];
+  const d = multiPathwayDiscount(S.club, cost); if(d) L.push({kind:'discount', desc:'Multi-pathway discount (5%)', qty:1, unit:-d});
+  const total = L.reduce((a, l) => a + l.qty * l.unit, 0);
+  const m = modal(`<h2>Upgrade your band</h2>
+    <p class="muted">Your schools have ${bc.count} children, which is in the ${esc(bc.need.short)} band (${gbp(bc.need.price)} a year). You pay the difference for the months left; your renewal date stays the same.</p>
+    ${L.map(l => `<div class="sum"><span>${esc(l.desc)}</span><span>${gbp(l.unit)}</span></div>`).join('')}
+    <div class="sum total"><span>Total</span><span>${gbp(total)}</span></div>
+    <div id="usum"></div>
+    <div class="btn-row" style="margin-top:14px"><button class="btn" id="ugo">Place order</button><button class="btn ghost" data-close>Cancel</button></div>`);
+  m.querySelector('#ugo').addEventListener('click', async () => {
+    const sb = m.querySelector('#ugo'); sb.disabled = true; sb.textContent = 'Placing order…';
+    let o; try{ o = await api.placeOrder({type:'club-licence', kind:'upgrade', band:bc.need.key, upgradeTo:bc.need.key, declaredChildren:bc.count, declaredSchools:S.schools.length, lines:L, total}); }
+    catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; m.querySelector('#usum').insertAdjacentHTML('beforeend', '<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
+    orderPlaced(m, o, 'Your new band applies as soon as payment is received.');
   });
 }
 
 /* ---------- Supplies (books, certificates, t-shirts) ---------- */
 function suppliesModal(){
   if(!licActive()) return licenceModal(licState(S.club, S.orders).key === 'expired' ? 'renew' : 'start');
-  const al = bookAllowance(S.club, S.orders);
+  const bc = bandCheck();
+  if(bc.over && !bc.pending) return upgradeModal();
   const book = shopItem('book'), cert = shopItem('cert'), shirt = shopItem('tshirt');
   const m = modal(`<h2>Order books, certificates &amp; t-shirts</h2>
     <form id="sf">
@@ -3381,55 +3441,33 @@ function suppliesModal(){
       <p class="note" style="margin:-6px 0 12px">Certificates ${gbp(cert.price)} each.</p>
       <div class="field"><label for="q_tshirt">${esc(shirt.name)} (${gbp(shirt.price)} each, suggested ${esc(shirt.rrp)})</label><input class="input" id="q_tshirt" type="number" min="0" max="500" value="0"></div>
       <div class="field"><label for="q_addr">Delivery address</label><textarea class="input" id="q_addr" rows="3" required>${esc(S.club.deliveryAddress || '')}</textarea></div>
-      <div id="sallow" class="note" style="margin:0 0 10px"></div>
       <div id="ssum"></div>
       <div class="btn-row" style="margin-top:14px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
     </form>`);
   const q = id => m.querySelector('#' + id);
   const n = k => Math.max(0, parseInt(q('q_' + k).value) || 0);
-  let upgrade = false;
-  const state = () => {
-    const books = n('book'), over = al.limit != null && al.used + books > al.limit;
-    const target = nextBand(al.band.key), fits = target.books == null || al.used + books <= target.books;
-    return {books, over, target, fits};
-  };
   const lines = () => {
-    const st = state(), L = [];
-    if(st.books) L.push({kind:'book', desc:book.name, qty:st.books, unit:book.price});
+    const L = [];
+    if(n('book')) L.push({kind:'book', desc:book.name, qty:n('book'), unit:book.price});
     CERT_TYPES.forEach(c => { if(n(c.key)) L.push({kind:'cert', desc:`${c.name} certificate`, qty:n(c.key), unit:cert.price}); });
     if(n('tshirt')) L.push({kind:'tshirt', desc:shirt.name, qty:n('tshirt'), unit:shirt.price});
-    if(upgrade && st.over){
-      const mr = monthsRemaining(S.club.schools), cost = upgradeCost(al.band.key, st.target.key, S.club.schools);
-      L.push({kind:'club', desc:`Club Licence upgrade, ${al.band.short} to ${st.target.short} gymnasts (${mr} month${mr === 1 ? '' : 's'} left on your licence)`, qty:1, unit:cost});
-      const d = multiPathwayDiscount(S.club, cost); if(d) L.push({kind:'discount', desc:'Multi-pathway discount (5%)', qty:1, unit:-d});
-    }
     const items = L.filter(l => ['book','tshirt'].includes(l.kind)).reduce((a, l) => a + l.qty, 0) + Math.ceil(L.filter(l => l.kind === 'cert').reduce((a, l) => a + l.qty, 0) / 10);
     const post = postageFor(items); if(post) L.push({kind:'postage', desc:`Postage and packing (${items} item${items === 1 ? '' : 's'})`, qty:1, unit:post});
     return L;
   };
   const sum = () => {
-    const st = state(), L = lines(), tot = L.reduce((a, l) => a + l.qty * l.unit, 0);
-    let msg = al.limit == null ? 'No limit on Awards Books for your club size.' : `Awards Books: ${al.used + st.books} of ${al.limit} for this licence year.`;
-    if(st.over){
-      msg = `<b style="color:#ff8a95">That’s more books than your band allows (${al.limit} a licence year, ${al.used} used).</b><br>
-        <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="sup" ${upgrade ? 'checked' : ''}> Upgrade to ${esc(st.target.short)} gymnasts for ${gbp(upgradeCost(al.band.key, st.target.key, S.club.schools))} (the difference, for the months left on your licence)</label>`;
-      if(upgrade && !st.fits) msg += `<br>Even after upgrading that’s more than ${st.target.books} books. Please contact us.`;
-    }
-    q('sallow').innerHTML = msg;
-    const up = q('sup'); if(up) up.addEventListener('change', () => { upgrade = up.checked; sum(); });
+    const L = lines(), tot = L.reduce((a, l) => a + l.qty * l.unit, 0);
     q('ssum').innerHTML = L.map(l => `<div class="sum"><span>${esc(l.desc)}${l.qty > 1 ? ` × ${l.qty}` : ''}</span><span>${gbp(l.qty * l.unit)}</span></div>`).join('')
       + `<div class="sum total"><span>Total</span><span>${gbp(tot)}</span></div>`;
   };
   m.querySelectorAll('input[type=number]').forEach(i => i.addEventListener('input', sum)); sum();
   q('sf').addEventListener('submit', async e => {
     e.preventDefault();
-    const st = state(), L = lines();
+    const L = lines();
     if(!L.some(l => ['book','cert','tshirt'].includes(l.kind))){ q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Add something to order.</p>'); return; }
-    if(st.over && !(upgrade && st.fits)){ q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Please sort out the book allowance above first.</p>'); return; }
     const addr = q('q_addr').value.trim(); if(!addr){ q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Please add a delivery address.</p>'); return; }
     const sb = m.querySelector('button[type=submit]'); sb.disabled = true; sb.textContent = 'Placing order…';
     const order = {type:'supplies', lines:L, total:L.reduce((a, l) => a + l.qty * l.unit, 0), delivery:addr};
-    if(upgrade && st.over) order.upgradeTo = st.target.key;
     let o; try{ if(addr !== (S.club.deliveryAddress || '')) await api.updateClub({deliveryAddress:addr}).catch(() => {}); o = await api.placeOrder(order); }
     catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; q('ssum').insertAdjacentHTML('beforeend', '<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
     orderPlaced(m, o, 'We send your order as soon as payment is received.');
@@ -3457,8 +3495,8 @@ function qrSVG(text){
 }
 function parentMessage(){
   return `Your child is taking part in NGL Schools gymnastics with ${S.club.name}.\n\n`
-    + `Watch the routines they’re learning and practise together at home in the NGL Schools Hub:\n${hubLink()}\n\n`
-    + `Or go to the Schools Hub and enter our club code: ${S.club.accessCode}`;
+    + `Watch the routines they’re learning and practise together at home in the NGL Schools family app:\n${hubLink()}\n\n`
+    + `Or open the Schools family app and enter our club code: ${S.club.accessCode}`;
 }
 async function copyText(text, note){
   try{ await navigator.clipboard.writeText(text); }
@@ -3476,7 +3514,7 @@ async function screenAdmin(){
   const waiting = ADM.orders.filter(o => o.status !== 'paid' && o.status !== 'sent');
   const orderRow = o => {
     const c = clubById[o.clubId] || {};
-    return `<tr><td class="mono">${esc(o.id)}</td><td>${esc(o.clubName||c.name||'')}<div class="note">${esc(orderSummary(o))}</div>${o.delivery ? `<div class="note" style="white-space:pre-line">${esc(o.delivery)}</div>` : ''}</td>
+    return `<tr><td class="mono">${esc(o.id)}</td><td>${esc(o.clubName||c.name||'')}<div class="note">${esc(orderSummary(o))}${o.declaredChildren != null ? ` · ${o.declaredChildren} children declared` : ''}</div>${o.delivery ? `<div class="note" style="white-space:pre-line">${esc(o.delivery)}</div>` : ''}</td>
       <td class="num"><b>${gbp(orderTotal(o))}</b></td>
       <td class="num"><div class="row-actions"><button class="btn ghost small" data-act="adm-invoice" data-order="${esc(o.id)}">Invoice</button>${o.status==='paid' || o.status==='sent' ? '<span class="tag ok">Paid</span>' : `<button class="btn small" data-act="adm-paid" data-order="${esc(o.id)}">Mark paid</button>`}</div></td></tr>`;
   };
@@ -3494,7 +3532,7 @@ async function screenAdmin(){
     <div class="card">
       <h2>Clubs (${ADM.clubs.length})</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Club</th><th>BG no.</th><th>Contact</th><th>Family code</th><th>Schools Club Licence</th><th></th></tr></thead>
+        <thead><tr><th>Club</th><th>BG no.</th><th>Contact</th><th>Family code</th><th>Schools Club Licence</th><th class="num">Children</th><th></th></tr></thead>
         <tbody>${ADM.clubs.map(c => {
           const st = licState(c, ADM.orders.filter(o => o.clubId === c.id));
           const lic = st.key === 'active' ? `<span class="tag ok">${esc(st.band ? st.band.short : 'Active')}</span><div class="note">${st.band ? gbp(st.band.price) + ' · ' : ''}to ${fmtDate(st.exp)}</div>`
@@ -3503,8 +3541,9 @@ async function screenAdmin(){
           return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.bgNumber||'')}</td><td>${esc(c.contact||'')}<div class="note">${esc(c.email||'')}</div></td>
             <td class="mono">${esc(c.accessCode||'')} ${c.codeActive ? '<span class="tag ok">Live</span>' : '<span class="tag wait">Off</span>'}</td>
             <td>${lic}</td>
+            <td class="num">${c.schoolsChildren == null ? '<span class="muted">—</span>' : c.schoolsChildren}${st.key === 'active' && c.schoolsChildren != null && st.band && bandIndex(bandForCount(c.schoolsChildren).key) > bandIndex(st.band.key) ? '<div><span class="tag wait">Over band</span></div>' : ''}</td>
             <td class="num"><button class="btn ghost small" data-act="adm-edit-club" data-club="${esc(c.id)}">Edit</button></td></tr>`;
-        }).join('') || '<tr><td colspan="6" class="muted">No clubs yet.</td></tr>'}</tbody>
+        }).join('') || '<tr><td colspan="7" class="muted">No clubs yet.</td></tr>'}</tbody>
       </table></div>
     </div>
 
@@ -3566,7 +3605,7 @@ function graduationsHTML(){
   const past = (S.events || []).filter(e => (e.date || '') < todayISO());
   return `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-      <div><h3 style="margin:0 0 4px">Graduations</h3><p class="muted" style="margin:0">Events you add here appear straight away in your families’ Schools Hub.</p></div>
+      <div><h3 style="margin:0 0 4px">Graduations</h3><p class="muted" style="margin:0">Events you add here appear straight away in your families’ Schools family app.</p></div>
       <button class="btn small" data-act="add-grad">+ Add Graduation</button>
     </div>
     ${up.length ? up.map(ev => `<div class="grad-row">
@@ -3623,7 +3662,7 @@ function payNote(o){
   if(o.type === 'club-licence') return o.kind === 'upgrade' ? 'Your new band applies as soon as payment is received.' : 'Your Schools Club Licence and family code switch on as soon as payment is received.';
   if(o.type === 'supplies') return 'Your order is sent as soon as payment is received.' + (o.upgradeTo ? ' Your new band applies once payment is received.' : '');
   if(o.type === 'graduation') return 'Your Graduation medals are sent as soon as payment is received.';
-  return 'Your club’s NGL Schools Hub code is switched on as soon as payment is received.';
+  return 'Your club’s NGL Schools family app code is switched on as soon as payment is received.';
 }
 function invoiceHTML(o, club){
   const issued = orderDate(o);
@@ -3755,6 +3794,8 @@ document.addEventListener('click', async e => {
   else if(a === 'add-school') addSchoolModal();
   else if(a === 'order' || a === 'licence') licenceModal(act.dataset.kind || (licState(S.club, S.orders).key === 'expired' ? 'renew' : 'start'));
   else if(a === 'supplies') suppliesModal();
+  else if(a === 'upgrade') upgradeModal();
+  else if(a === 'edit-school') addSchoolModal(act.dataset.school);
   else if(a === 'copy-msg') copyText(parentMessage(), 'Message copied. Paste it into your letter, email or WhatsApp.');
   else if(a === 'copy-link') copyText(hubLink(), 'Link copied.');
   else if(a === 'new-code'){
