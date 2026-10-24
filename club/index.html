@@ -177,6 +177,12 @@
     #print-area{display:block;}
     #print-area .inv{min-width:0;padding:0;}
   }
+.sch-vids{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.sch-play{position:relative;display:block;width:100%;aspect-ratio:16/9;border:0;padding:0;border-radius:12px;overflow:hidden;background:#000;cursor:pointer}
+.sch-play img{width:100%;height:100%;object-fit:cover;display:block}
+.sch-play span{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:58px;height:58px;border-radius:50%;background:var(--schools,#F8D438);color:#1b1300;font-size:22px;display:grid;place-items:center}
+.sch-frame{width:100%;aspect-ratio:16/9;border:0;border-radius:12px;display:block}
+.sch-skills{margin:0;padding-left:22px;columns:2;column-gap:28px;line-height:1.6}
 </style>
 </head>
 <body>
@@ -3342,6 +3348,8 @@ function screenDashboard(){
       <p class="note" style="margin:8px 0 0">Just numbers, no names. Keep these up to date: your total sets your licence band, and your schools are used for Graduations.</p>
     </div>
 
+    ${programmeHTML()}
+
     ${graduationsHTML()}
   `);
 }
@@ -3600,7 +3608,76 @@ function medalsModal(ev){
     }
   });
 }
+/* ---------- Programme: routines and videos for coaches ----------
+   Without a licence a club sees Level 1 as a sample; the licence opens all six levels. */
+const SCH_LEVEL_VIDEOS = {
+  floor:  ["RNUwhMXiYis","eADe1GviPLM","h16vKU5tP4U","FpKpFKOUYyU","iOsuHJGkO1c","YAgIG_0C6uw"],
+  bench:  ["svkVbP3FZ3g","7jVy-1UzC3A","xitDvlyhDuk","pkv5WK6rjM4","1PnEO8Uvz5s","NJSKCnuaan4"],
+  block:  ["Tk9rSyeja-4","lZ-UoxomKzw","sLOY2MHdAXk","W5be9WitaYE","HJTE-yp1MWY","EdxpJ7TUja0"],
+  spring: ["DYYRmbEa50s","M70tbYs7Ld8","5pyvEyEWVW0","Oh_UWsoI0NM","L6_0UBX5dj8","CRlrSVHQGi0"]
+};
+const SCH_BLOCK_CAPTIONS = [
+  "Squat on low table from stand, straight jump off",
+  "Squat on low table from stand, star jump off",
+  "Run, squat on, tuck jump off",
+  "Run, squat on, star jump off",
+  "Run side vault over, tucked legs",
+  "Run side vault over, straight legs"
+];
+const SCH_SPRING_CAPTIONS = [
+  "Run, straight jump off springboard to land",
+  "Run, star jump off springboard to land",
+  "Run, tuck jump off springboard to land",
+  "Run, straddle jump off springboard to land",
+  "Run, star jump off springboard, over low table",
+  "Run, tuck jump off springboard, over low table"
+];
+const SCH_FLOOR_SKILLS = [
+  ["Straight jump","Star jump","Forward roll to ball","Straddle","Pike","Back support","Side support","Front support","Tuck","Bent leg balance"],
+  ["Straight jump","Star jump","Tuck jump","Forward roll to ball","Straddle","Pike","Back support","Side support","Front support","Tuck","Sideways bunny jump x3","Straight leg balance"],
+  ["Tuck jump","1/2 jump x2","Forward roll to ball","Shoulder stand","Bridge","Straddle","Pike","Back support","Side support","Front support","Press up x3","Burpee","Arabesque","Cartwheel"],
+  ["1/1 jump","Forward roll to stand","Tuck","Shoulder stand no hands","Japana 45 degrees","Bridge","Back support","Leg lift each leg","Side support","Front support","Press up x3","Burpee","Arabesque","Cartwheel","Handstand"],
+  ["Straight jump","1/1 jump","Forward roll to straddle stand","Straight","Tuck","Headstand tucked","Tuck","Bridge","Back support","Front support","Press up x5","Burpee","Arabesque leg horizontal","Cartwheel","Handstand","One free move"],
+  ["Straight jump","1/1 jump","Forward roll to straddle stand","Straight","Tuck","Headstand straight","Tuck","Bridge leg raise","Back support","Front support","Press up x5","Burpee","Arabesque leg horizontal","One handed Cartwheel","Handstand","One free move"]
+];
+const SCH_BENCH_SKILLS = [
+  ["Step up","Walk to middle","Straight jump","Walk to end","Half turn","Single leg balance","High kicks to middle","Dip steps to end","Straight jump off"],
+  ["Step up","Walk on toes to middle","Straight jump","Tuck jump","Walk on toes to the end","Half spin on toes","Single leg balance","Bunny jumps to middle","Rebound jumps to end","Star jump off"],
+  ["Travelling bunny jumps side to side into middle","Bunny jump on","Straight jump","Star jump","Tuck jump","Tuck shape","Shoulder stand","Roll to stand","Dip steps to end","Walk backwards to middle","Half turn on toes","High knee single leg balance","Cat leaps to end","Half turn jump off"],
+  ["Squat on in the middle","Straddle stand or side splits","Tuck shape","Quarter turn in tuck","Tuck walk to end","Half spin on toes","Forward roll to stand (mat can be slid in)","Dip steps to end","Half spin","Arabesque","Cat leaps to middle","Cartwheel off the end"],
+  ["Jump to wide straddle or side splits","Push to stand","Star jump","Tuck jump","Half turn jump","Side chasse to end","Cartwheel (mat can be slid in)","Forward roll (mat)","Arabesque","Kick turn","Step or skip step into round off"],
+  ["Jump into forward roll (mat)","Straddle lever","Swing legs behind push to stand","Split leap to end","Half spin","Half handstand","Cartwheel (mat)","Tuck headstand (mat)","Arabesque to horizontal","Skip step round off"]
+];
+const SCH_PROG = {app:'floor', lvl:1};
+function schoolsLicensed(){ return licState(S.club, S.orders).key === 'active'; }
+function programmeHTML(){
+  const on = schoolsLicensed(), app = SCH_PROG.app, L = SCH_PROG.lvl;
+  const apps = [['floor','Floor'],['bench','Bench'],['vault','Vault']];
+  const locked = !on && L > 1;
+  const vids = app === 'floor' ? [[SCH_LEVEL_VIDEOS.floor[L-1], 'Level ' + L + ' floor routine']]
+    : app === 'bench' ? [[SCH_LEVEL_VIDEOS.bench[L-1], 'Level ' + L + ' bench routine']]
+    : [[SCH_LEVEL_VIDEOS.block[L-1], SCH_BLOCK_CAPTIONS[L-1]], [SCH_LEVEL_VIDEOS.spring[L-1], SCH_SPRING_CAPTIONS[L-1]]];
+  const skills = app === 'floor' ? SCH_FLOOR_SKILLS[L-1] : app === 'bench' ? SCH_BENCH_SKILLS[L-1] : null;
+  return `<div class="card" id="schProg">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <div><h3 style="margin:0 0 4px">Programme: routines &amp; videos</h3><p class="muted" style="margin:0">${on ? 'All six levels across Floor, Bench and Vault.' : 'Level 1 is open as a sample. Your Schools Club Licence opens all six levels.'}</p></div>
+    </div>
+    <div class="btn-row" style="margin:10px 0 6px">${apps.map(([k, n]) => `<button class="btn small${k === app ? '' : ' ghost'}" data-sch-app="${k}">${n}</button>`).join('')}</div>
+    <div class="btn-row" style="margin:0 0 12px">${[1,2,3,4,5,6].map(n => `<button class="btn small${n === L ? '' : ' ghost'}" data-sch-lvl="${n}">${!on && n > 1 ? '🔒 ' : ''}Level ${n}</button>`).join('')}</div>
+    ${locked ? `<div class="note" style="padding:18px;text-align:center"><b>Level ${L} unlocks with your Schools Club Licence.</b><br>Start your licence above to open every routine, skill list and video.</div>`
+      : `<div class="sch-vids">${vids.map(([id, cap]) => `<div class="sch-vid"><button class="sch-play" data-sch-vid="${esc(id)}" aria-label="Play ${esc(cap)}"><img src="https://i.ytimg.com/vi/${esc(id)}/hqdefault.jpg" alt="" loading="lazy"><span>▶</span></button><p class="muted" style="margin:6px 0 0;font-size:14px">${esc(cap)}</p></div>`).join('')}</div>
+        ${skills ? `<p class="eyebrow" style="margin:14px 0 6px">Level ${L} ${app} skills</p><ol class="sch-skills">${skills.map(x => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}`}
+  </div>`;
+}
+document.addEventListener('click', e => {
+  const a = e.target.closest('[data-sch-app],[data-sch-lvl],[data-sch-vid]'); if(!a) return;
+  if(a.dataset.schVid){ a.outerHTML = `<iframe class="sch-frame" src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(a.dataset.schVid)}?autoplay=1&rel=0&modestbranding=1&playsinline=1" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`; return; }
+  if(a.dataset.schApp) SCH_PROG.app = a.dataset.schApp; else SCH_PROG.lvl = +a.dataset.schLvl;
+  const el = document.getElementById('schProg'); if(el) el.outerHTML = programmeHTML();
+});
 function graduationsHTML(){
+  if(!schoolsLicensed()) return `<div class="card"><h3 style="margin:0 0 4px">Graduations</h3>
+    <p class="muted" style="margin:0">Each programme finishes with a Graduation, added here and shown straight away in your families’ Schools family app. Graduations open with your Schools Club Licence.</p></div>`;
   const up = (S.events || []).filter(e => (e.date || '') >= todayISO()).sort((a,b) => (a.date + (a.time||'')).localeCompare(b.date + (b.time||'')));
   const past = (S.events || []).filter(e => (e.date || '') < todayISO());
   return `<div class="card">
