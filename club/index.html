@@ -3036,7 +3036,7 @@ function pitchHTML(signedInView){
   <div class="section card">
     <h2>Simple yearly Club Licence</h2>
     <p class="muted">Your club pays one licence a year, banded by how many Schools gymnasts you coach, with small clubs in mind. Books, certificates and t-shirts are ordered as you need them, and your licence pays for itself from what you sell to families.</p>
-    <p class="muted">From £150 a year depending on how many Schools gymnasts you coach.</p>
+    <p class="muted">From £150 a year + VAT, depending on how many Schools gymnasts you coach.</p>
     <div class="btn-row"><button class="btn" data-go="register">Register your club</button><a class="btn ghost" href="https://club.nationalgymnasticsleague.co.uk/licences.html" target="_blank" rel="noopener">See all licence fees ↗</a></div>
   </div>`}
   ${!signedInView ? '' : `
@@ -3044,10 +3044,11 @@ function pitchHTML(signedInView){
     <h2>Schools Club Licence, per year</h2>
     <p class="muted">One yearly licence for your club, whatever the number of schools. It switches on your family code and lets you order Awards Books, certificates and t-shirts. It runs for 12 months from the day payment is received.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Schools gymnasts at your club</th><th class="num">Per year</th><th class="num">Price per gymnast</th></tr></thead>
+      <thead><tr><th>Schools gymnasts at your club</th><th class="num">Per year (+ VAT)</th><th class="num">Price per gymnast</th></tr></thead>
       <tbody>${SCHOOLS_BANDS.map(b => `<tr ${S.club && S.club.schools && S.club.schools.band === b.key ? 'class="hl"' : ''}><td>${b.label.replace(' Schools gymnasts', '')}</td><td class="num"><b>${gbp(b.price)}</b></td><td class="num">${b.max == null ? gbp(Math.round(b.price / (SCHOOLS_BANDS[SCHOOLS_BANDS.length - 2].max + 1) * 100) / 100) + ' or less' : 'From ' + gbp(Math.round(b.price / b.max * 100) / 100)}</td></tr>`).join('')}</tbody>
     </table></div>
     <ul class="ticks" style="margin-top:14px">
+      <li><b>Prices exclude VAT.</b> VAT at 20% is added to your invoice.</li>
       <li><b>Running more than one NGL pathway?</b> You get 5% off every pathway licence except your most expensive one.</li>
       <li><b>Your band comes from your schools.</b> In the Club Hub you list each school and how many children take part (numbers only, no names). You confirm the total when you start or renew, and NGL may ask for evidence such as a register count.</li>
       <li><b>Growing?</b> If your total moves into the next band, upgrade at any time. You pay the difference for the months left on your licence, and your renewal date stays the same. Fewer children at renewal? You drop to the lower band.</li>
@@ -3307,7 +3308,7 @@ function licenceCardHTML(){
     btns = '<button class="btn small" data-act="licence" data-kind="renew">Renew licence</button>';
   }else{
     head = 'Start your Schools Club Licence';
-    body = `<p class="muted" style="margin:6px 0 0">One yearly licence for your club, priced by how many Schools gymnasts you coach. From ${gbp(SCHOOLS_BANDS[0].price)} a year. It switches on your family code and lets you order books, certificates and t-shirts.</p>`;
+    body = `<p class="muted" style="margin:6px 0 0">One yearly licence for your club, priced by how many Schools gymnasts you coach. From ${gbp(SCHOOLS_BANDS[0].price)} a year + VAT. It switches on your family code and lets you order books, certificates and t-shirts.</p>`;
     btns = '<button class="btn small" data-act="licence" data-kind="start">Start your licence</button><button class="btn ghost small" data-tab="programme">See pricing</button>';
   }
   return `<div class="card band-card">
@@ -3394,7 +3395,7 @@ function licenceModal(kind){
         ${S.schools.map(s => `<tr><td>${esc(s.name)}</td><td class="num">${parseInt(s.children) || 0}</td></tr>`).join('')}
         <tr><td><b>Total children</b></td><td class="num"><b>${count}</b></td></tr>
       </tbody></table></div>
-      <p class="muted" style="margin:10px 0">That puts your club in the <b>${esc(b.short)}</b> band: <b>${gbp(b.price)} a year</b>. Numbers wrong? <button class="link" type="button" data-close>Update your schools</button> first.</p>
+      <p class="muted" style="margin:10px 0">That puts your club in the <b>${esc(b.short)}</b> band: <b>${gbp(b.price)} a year + VAT</b>. Numbers wrong? <button class="link" type="button" data-close>Update your schools</button> first.</p>
       ${L.map(l => `<div class="sum"><span>${esc(l.desc)}</span><span>${gbp(l.unit)}</span></div>`).join('')}
       <div class="sum total"><span>Total</span><span>${gbp(total)}</span></div>
       <label style="display:flex;gap:8px;align-items:flex-start;margin:14px 0 0"><input type="checkbox" id="ldec" required style="width:auto;margin-top:3px">
@@ -3421,7 +3422,7 @@ function upgradeModal(){
   const d = multiPathwayDiscount(S.club, cost); if(d) L.push({kind:'discount', desc:'Multi-pathway discount (5%)', qty:1, unit:-d});
   const total = L.reduce((a, l) => a + l.qty * l.unit, 0);
   const m = modal(`<h2>Upgrade your band</h2>
-    <p class="muted">Your schools have ${bc.count} children, which is in the ${esc(bc.need.short)} band (${gbp(bc.need.price)} a year). You pay the difference for the months left; your renewal date stays the same.</p>
+    <p class="muted">Your schools have ${bc.count} children, which is in the ${esc(bc.need.short)} band (${gbp(bc.need.price)} a year + VAT). You pay the difference for the months left; your renewal date stays the same.</p>
     ${L.map(l => `<div class="sum"><span>${esc(l.desc)}</span><span>${gbp(l.unit)}</span></div>`).join('')}
     <div class="sum total"><span>Total</span><span>${gbp(total)}</span></div>
     <div id="usum"></div>
