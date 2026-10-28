@@ -381,12 +381,16 @@ document.addEventListener('click', e => { const b = e.target.closest && e.target
 let session = null;   // {code, clubName, season}
 let autoTried = false;
 
+/* The club code is also kept in a long-life cookie, because iPhone Home Screen apps can lose local storage */
 function store(get, val){
+  const ck = v => { try{ document.cookie = STORE_KEY + '=' + (v == null ? '; Max-Age=0' : encodeURIComponent(v) + '; Max-Age=34560000') + '; Path=/; SameSite=Lax; Secure'; }catch(e){} };
   try{
-    if(get) return JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-    if(val === null) localStorage.removeItem(STORE_KEY);
-    else localStorage.setItem(STORE_KEY, JSON.stringify(val));
-  }catch(e){ return null; }
+    if(get){ let j = localStorage.getItem(STORE_KEY);
+      if(!j){ const m = document.cookie.match(new RegExp('(?:^|; )' + STORE_KEY + '=([^;]*)')); if(m) j = decodeURIComponent(m[1]); }
+      return JSON.parse(j || 'null'); }
+    if(val === null){ localStorage.removeItem(STORE_KEY); ck(null); }
+    else { const j = JSON.stringify(val); localStorage.setItem(STORE_KEY, j); ck(j); }
+  }catch(e){ if(get) return null; }
 }
 
 /* ---------- Club code check ---------- */
