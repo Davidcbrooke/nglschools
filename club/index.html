@@ -2981,7 +2981,7 @@ function setTop(){
   if(signedIn){
     ta.innerHTML = `${S.club ? `<span class="pill">${esc(S.club.name)}</span>` : ''}<button class="btn ghost small" data-act="signout">Sign out</button>`;
     nav.hidden = false;
-    const tabs = (S.club && !ADMIN_MODE) ? [['dashboard','Dashboard'],['orders','Orders'],['programme','Programme & pricing']] : [];
+    const tabs = (S.club && !ADMIN_MODE) ? [['dashboard','Dashboard'],['orders','Orders'],['planner','Profit planner'],['programme','Programme & pricing']] : [];
     nav.innerHTML = tabs
       .map(([k,l]) => `<button class="navtab ${tab===k?'active':''}" data-tab="${k}">${l}</button>`).join('');
   }else{
@@ -3261,12 +3261,206 @@ function codeCardHTML(){
 
 function screenProgramme(){ render(pitchHTML(true)); }
 
+/* =====================================================================
+   PROFIT PLANNER (Nov 2026)
+   A club-side P&L projection for NGL Schools. Clubs change the
+   assumptions; NGL prices (licence bands, books, certificates, postage,
+   Graduation) come from the constants above so they stay in step.
+   Saved per club in clubs/{uid}.projection (club-writable field).
+   ===================================================================== */
+const PLAN_DEFAULTS = {
+  bandChildren: 100, vatRegistered: false,
+  o1On: true, o1Schools: 2, o1Children: 100, o1Fee: 950, o1BookPrice: 8, o1Visits: 10, o1VisitHrs: 2, o1TrainHrs: 3,
+  o2On: true, o2Children: 30, o2Fee: 6, o2Weeks: 33, o2Group: 15, o2SessHrs: 1.5, o2Overheads: 10, o2Hall: 0, o2BookPrice: 10,
+  coachRate: 25, gradRate: 60, newRate: 33, certsPerChild: 3
+};
+function planStart(){
+  const saved = (S.club && S.club.projection) || {};
+  const p = {...PLAN_DEFAULTS, ...saved};
+  if(!saved.bandChildren){
+    const n = childrenTotal();
+    if(n){ p.bandChildren = n; p.o1Children = n; p.o1Schools = Math.max(1, S.schools.length); }
+  }
+  return p;
+}
+function planCalc(p){
+  const r2 = x => Math.round(x * 100) / 100;
+  const band = bandForCount(Math.max(1, p.bandChildren));
+  const disc = multiPathwayDiscount(S.club, band.price);
+  const licNet = band.price - disc;
+  const licVat = p.vatRegistered ? 0 : r2(licNet * VAT_RATE);
+  const book = shopItem('book').price, cert = shopItem('cert').price;
+  const gradKeep = GRAD_FAMILY_PRICE - GRAD_NGL_FEE;
+  const opt = (on, kind, newOnly) => {
+    if(!on) return null;
+    const n = kind === 1 ? p.o1Children : p.o2Children;
+    const books = Math.round(newOnly ? n * p.newRate / 100 : n);
+    const grads = Math.round(n * p.gradRate / 100);
+    const inc = [], cost = [];
+    if(kind === 1){
+      inc.push(['School licence fees', `${p.o1Schools} school${p.o1Schools === 1 ? '' : 's'} × ${gbp(p.o1Fee)}`, p.o1Schools * p.o1Fee]);
+      inc.push(['Awards Books sold to schools', `${books} × ${gbp(p.o1BookPrice)}`, books * p.o1BookPrice]);
+    }else{
+      inc.push(['Weekly club fees', `${n} children × ${gbp(p.o2Fee)} × ${p.o2Weeks} weeks`, n * p.o2Fee * p.o2Weeks]);
+      inc.push(['Awards Books sold to families', `${books} × ${gbp(p.o2BookPrice)}`, books * p.o2BookPrice]);
+    }
+    inc.push(['Graduation (you keep ' + gbp(gradKeep) + ')', `${grads} graduates`, grads * gradKeep]);
+    cost.push(['Awards Books from NGL', `${books} × ${gbp(book)}`, books * book]);
+    cost.push(['Certificates from NGL', `${n * p.certsPerChild} × ${gbp(cert)}`, r2(n * p.certsPerChild * cert)]);
+    const items = books + Math.ceil(n * p.certsPerChild / 10);
+    cost.push(['Postage', '2 orders a year', items ? 2 * postageFor(Math.ceil(items / 2)) : 0]);
+    if(kind === 1){
+      cost.push(['Coach: monthly visits', `${p.o1Schools} × ${p.o1Visits} visits × ${p.o1VisitHrs} hrs × ${gbp(p.coachRate)}`, p.o1Schools * p.o1Visits * p.o1VisitHrs * p.coachRate]);
+      cost.push(['Coach: teacher training', `${p.o1Schools} × ${p.o1TrainHrs} hrs × ${gbp(p.coachRate)}`, p.o1Schools * p.o1TrainHrs * p.coachRate]);
+    }else{
+      const groups = Math.max(n ? 1 : 0, Math.ceil(n / Math.max(1, p.o2Group)));
+      cost.push(['Coaches', `${groups} group${groups === 1 ? '' : 's'} × ${p.o2Weeks} weeks × ${p.o2SessHrs} hrs × ${gbp(p.coachRate)}`, groups * p.o2Weeks * p.o2SessHrs * p.coachRate]);
+      if(p.o2Hall) cost.push(['Hall hire', `${groups} × ${p.o2Weeks} weeks × ${gbp(p.o2Hall)}`, groups * p.o2Weeks * p.o2Hall]);
+      cost.push(['Admin, equipment and insurance', `${p.o2Overheads}% of fees`, r2(n * p.o2Fee * p.o2Weeks * p.o2Overheads / 100)]);
+    }
+    const I = r2(inc.reduce((a, x) => a + x[2], 0)), C = r2(cost.reduce((a, x) => a + x[2], 0));
+    return {inc, cost, I, C, P: r2(I - C), n};
+  };
+  const yr = newOnly => {
+    const o1 = opt(p.o1On, 1, newOnly), o2 = opt(p.o2On, 2, newOnly);
+    const lic = r2(licNet + licVat);
+    const I = r2((o1 ? o1.I : 0) + (o2 ? o2.I : 0));
+    const C = r2((o1 ? o1.C : 0) + (o2 ? o2.C : 0) + lic);
+    return {o1, o2, lic, I, C, P: r2(I - C)};
+  };
+  return {band, disc, licNet, licVat, y1: yr(false), y2: yr(true)};
+}
+function planInputs(p){
+  const num = (k, label, step = 1, pre = '', note = '') => `<div class="field"><label for="pl_${k}">${label}</label>
+    <div style="display:flex;align-items:center;gap:6px">${pre ? `<span class="muted">${pre}</span>` : ''}<input class="input" id="pl_${k}" data-k="${k}" type="number" min="0" step="${step}" value="${esc(p[k])}"></div>${note ? `<p class="note" style="margin:4px 0 0">${note}</p>` : ''}</div>`;
+  const chk = (k, label) => `<label style="display:flex;gap:8px;align-items:center;margin:0 0 12px;font-weight:700"><input type="checkbox" data-k="${k}" ${p[k] ? 'checked' : ''} style="width:18px;height:18px"> ${label}</label>`;
+  return `
+  <div class="grid2">
+    <div class="card" style="margin:0">
+      <h3 style="margin:0 0 10px">Your licence</h3>
+      ${num('bandChildren', 'Children across your schools (sets your band)')}
+      <p class="note" id="pl_band" style="margin:-6px 0 12px"></p>
+      ${chk('vatRegistered', 'Our club is VAT registered (we reclaim the VAT on the licence)')}
+      <h3 style="margin:16px 0 10px">Shared</h3>
+      ${num('coachRate', 'Coach pay per hour', 0.5, '£', 'Include travel if you pay it')}
+      ${num('gradRate', 'Children who graduate each year (%)')}
+      ${num('newRate', 'New children each later year (%)', 1, '', 'Only new children need a book after year 1')}
+    </div>
+    <div class="card" style="margin:0">
+      ${chk('o1On', 'Option 1: Teacher-led')}
+      ${num('o1Schools', 'Schools')}
+      ${num('o1Children', 'Children in teacher-led classes')}
+      ${num('o1Fee', 'School licence fee per school, per year', 10, '£')}
+      ${num('o1BookPrice', 'Awards Book price to schools', 0.5, '£')}
+      ${num('o1Visits', 'Coach visits per school, per year')}
+      ${num('o1VisitHrs', 'Hours per visit', 0.5)}
+      ${num('o1TrainHrs', 'Teacher training hours per school', 0.5)}
+    </div>
+  </div>
+  <div class="card" style="margin:16px 0 0">
+    ${chk('o2On', 'Option 2: After-school club')}
+    <div class="grid2">
+      <div>${num('o2Children', 'Children in after-school clubs')}${num('o2Fee', 'Fee per session', 0.5, '£')}${num('o2Weeks', 'Weeks a year')}${num('o2BookPrice', 'Awards Book price to families', 0.5, '£')}</div>
+      <div>${num('o2Group', 'Children per coach (group size)')}${num('o2SessHrs', 'Coach hours paid per session', 0.25)}${num('o2Hall', 'Hall hire per session', 1, '£', 'Leave at 0 if the school provides the hall')}${num('o2Overheads', 'Admin, equipment and insurance (% of fees)')}</div>
+    </div>
+  </div>`;
+}
+function planResults(p){
+  const R = planCalc(p);
+  const y1 = R.y1, y2 = R.y2;
+  const col = (v) => `<td class="num" style="font-variant-numeric:tabular-nums">${gbp(Math.round(v * 100) / 100)}</td>`;
+  const sign = v => `<b style="color:${v >= 0 ? 'var(--ok)' : '#ff8a95'}">${v < 0 ? '−' : ''}£${Math.abs(Math.round(v)).toLocaleString('en-GB')}</b>`;
+  const block = (title, a, b) => {
+    if(!a) return '';
+    const rows = (k) => a[k].map((x, i) => `<tr><td>${esc(x[0])}<div class="note">${esc(x[1])}</div></td>${col(x[2] * (k === 'cost' ? -1 : 1))}${col(b[k][i][2] * (k === 'cost' ? -1 : 1))}</tr>`).join('');
+    return `<tr><td colspan="3" style="padding-top:16px"><b style="color:var(--schools)">${title}</b> <span class="note">· ${a.n} children</span></td></tr>
+      ${rows('inc')}${rows('cost')}
+      <tr><td><b>${title}: profit before licence</b></td><td class="num">${sign(a.P)}</td><td class="num">${sign(b.P)}</td></tr>`;
+  };
+  document.getElementById('pl_band').innerHTML = `Band <b>${esc(R.band.short)}</b>: ${gbp(R.band.price)} a year${R.disc ? `, less ${gbp(R.disc)} multi-pathway discount` : ''}, + VAT.`;
+  document.getElementById('pl_out').innerHTML = `
+    <div class="kpis" style="margin-top:0">
+      <div class="kpi"><div class="v" style="color:var(--schools)">${sign(y1.P)}</div><div class="l">Profit, year 1</div></div>
+      <div class="kpi"><div class="v">${sign(y2.P)}</div><div class="l">Profit, later years</div></div>
+      <div class="kpi"><div class="v">${gbp(Math.round(y1.I))}</div><div class="l">Income, year 1</div></div>
+      <div class="kpi"><div class="v">${gbp(y1.lic)}</div><div class="l">NGL licence${p.vatRegistered ? ' (VAT reclaimed)' : ' incl. VAT'}</div></div>
+    </div>
+    <div class="table-wrap" style="margin-top:14px"><table>
+      <thead><tr><th></th><th class="num">Year 1</th><th class="num">Later years</th></tr></thead>
+      <tbody>
+        ${block('Option 1: Teacher-led', y1.o1, y2.o1)}
+        ${block('Option 2: After-school club', y1.o2, y2.o2)}
+        <tr><td colspan="3" style="padding-top:16px"><b style="color:var(--schools)">Your NGL licence</b></td></tr>
+        <tr><td>NGL Schools Club Licence, ${esc(R.band.short)}<div class="note">${gbp(R.licNet)}${R.licVat ? ` + ${gbp(R.licVat)} VAT` : ' (VAT reclaimed)'}</div></td>${col(-y1.lic)}${col(-y2.lic)}</tr>
+        <tr><td><b>Total income</b></td>${col(y1.I)}${col(y2.I)}</tr>
+        <tr><td><b>Total costs</b></td>${col(-y1.C)}${col(-y2.C)}</tr>
+        <tr><td><b style="font-size:17px">Profit</b></td><td class="num" style="font-size:17px">${sign(y1.P)}</td><td class="num" style="font-size:17px">${sign(y2.P)}</td></tr>
+      </tbody></table></div>
+    <p class="note" style="margin:10px 0 0">NGL prices are live: books ${gbp(shopItem('book').price)}, certificates ${gbp(shopItem('cert').price)}, Graduation ${gbp(GRAD_NGL_FEE)} a graduate (families pay ${gbp(GRAD_FAMILY_PRICE)}). Everything else is your own estimate. This is a planning guide, not financial advice.</p>`;
+  return R;
+}
+function planRead(){
+  const p = {...PLAN_DEFAULTS};
+  document.querySelectorAll('#pl_form [data-k]').forEach(el => {
+    const k = el.dataset.k;
+    p[k] = el.type === 'checkbox' ? el.checked : Math.max(0, parseFloat(el.value) || 0);
+  });
+  return p;
+}
+function screenPlanner(){
+  const p = planStart();
+  render(`
+    <div class="card">
+      <p class="eyebrow">NGL Schools · Profit planner</p>
+      <h2 style="margin:0 0 6px">What NGL Schools could earn your club</h2>
+      <p class="muted" style="margin:0">Change any number and the profit updates straight away. We’ve started you with NGL’s suggested figures${childrenTotal() ? ' and the children in your schools' : ''}. Save your numbers to come back to them, or print a copy.</p>
+      <div class="btn-row" style="margin-top:14px"><button class="btn small" data-act="plan-save">Save my numbers</button><button class="btn ghost small" data-act="plan-print">Print or save as PDF</button><button class="btn ghost small" data-act="plan-reset">Reset to NGL’s figures</button></div>
+      <p class="note" id="pl_msg" style="margin:8px 0 0;min-height:1em"></p>
+    </div>
+    <div id="pl_form">${planInputs(p)}</div>
+    <div class="card" style="margin-top:16px"><h2 style="margin:0 0 12px">Your profit and loss</h2><div id="pl_out"></div></div>`);
+  const upd = () => planResults(planRead());
+  document.querySelectorAll('#pl_form [data-k]').forEach(el => el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', upd));
+  upd();
+}
+function planPrintHTML(p, R){
+  const row = (a, b, i, k) => `<tr><td>${esc(a[k][i][0])}<div class="inv-sub">${esc(a[k][i][1])}</div></td><td class="num">${gbp(a[k][i][2] * (k === 'cost' ? -1 : 1))}</td><td class="num">${gbp(b[k][i][2] * (k === 'cost' ? -1 : 1))}</td></tr>`;
+  const block = (t, a, b) => !a ? '' : `<tr><td colspan="3"><b>${t}</b> · ${a.n} children</td></tr>${a.inc.map((_, i) => row(a, b, i, 'inc')).join('')}${a.cost.map((_, i) => row(a, b, i, 'cost')).join('')}<tr><td><b>Profit before licence</b></td><td class="num"><b>${gbp(a.P)}</b></td><td class="num"><b>${gbp(b.P)}</b></td></tr>`;
+  return `<div class="inv"><div class="inv-top"><div><div class="inv-h" style="font-size:22px">NGL SCHOOLS PROFIT PLAN</div><div class="inv-sub">${esc(S.club.name || '')} · ${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div></div></div>
+    <table class="inv-table"><thead><tr><th></th><th class="num">Year 1</th><th class="num">Later years</th></tr></thead><tbody>
+    ${block('Option 1: Teacher-led', R.y1.o1, R.y2.o1)}${block('Option 2: After-school club', R.y1.o2, R.y2.o2)}
+    <tr><td>NGL Schools Club Licence, ${esc(R.band.short)}${R.licVat ? ' (incl. VAT)' : ''}</td><td class="num">${gbp(-R.y1.lic)}</td><td class="num">${gbp(-R.y2.lic)}</td></tr>
+    <tr class="inv-total"><td>Profit</td><td class="num">${gbp(R.y1.P)}</td><td class="num">${gbp(R.y2.P)}</td></tr></tbody></table>
+    <p class="inv-sub">Assumptions: coach pay ${gbp(p.coachRate)}/hr; ${p.gradRate}% graduate; ${p.newRate}% new children in later years${p.o1On ? `; Option 1: ${gbp(p.o1Fee)} per school, ${p.o1Visits} visits of ${p.o1VisitHrs} hrs, ${p.o1TrainHrs} hrs training` : ''}${p.o2On ? `; Option 2: ${gbp(p.o2Fee)} a session, ${p.o2Weeks} weeks, ${p.o2Group} per coach, ${p.o2SessHrs} coach hrs a session, ${p.o2Overheads}% overheads${p.o2Hall ? ', hall ' + gbp(p.o2Hall) + ' a session' : ''}`: ''}. A planning guide, not financial advice.</p>
+    <div class="inv-foot">National Gymnastics League · NGL Schools</div></div>`;
+}
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-act^="plan-"]'); if(!t) return;
+  const a = t.dataset.act, msg = document.getElementById('pl_msg');
+  if(a === 'plan-save'){
+    const p = planRead();
+    try{ await api.updateClub({projection:p}); if(msg){ msg.style.color = 'var(--ok)'; msg.textContent = '✓ Saved. Your numbers will be here next time.'; } }
+    catch(err){ console.error(err); if(msg) msg.textContent = 'Couldn’t save just now. Please try again.'; }
+  }else if(a === 'plan-reset'){
+    if(S.club) delete S.club.projection;
+    const p = {...PLAN_DEFAULTS}; const n = childrenTotal(); if(n){ p.bandChildren = n; p.o1Children = n; p.o1Schools = Math.max(1, S.schools.length); }
+    document.getElementById('pl_form').innerHTML = planInputs(p);
+    document.querySelectorAll('#pl_form [data-k]').forEach(el => el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', () => planResults(planRead())));
+    planResults(p); if(msg){ msg.style.color = ''; msg.textContent = 'Reset to NGL’s figures. Press Save to keep them.'; }
+  }else if(a === 'plan-print'){
+    const p = planRead();
+    document.getElementById('print-area').innerHTML = planPrintHTML(p, planCalc(p));
+    window.print();
+  }
+});
+
+
 function show(){
   setTop();
   if(!signedIn) return ADMIN_MODE ? screenLogin() : screenLanding();
   if(ADMIN_MODE){ if(S.isAdmin) screenAdmin(); else render('<div class="card"><h2>NGL admins only</h2><p class="muted">This login isn’t an NGL admin account.</p></div>'); window.scrollTo(0,0); return; }
   if(tab === 'admin' || !S.club){ if(!S.club){ render('<div class="card"><h2>No club on this login</h2><p class="muted">NGL admin has moved to the main NGL Admin app (Awards licences).</p></div>'); window.scrollTo(0,0); return; } tab = 'dashboard'; }
-  ({dashboard:screenDashboard, orders:screenOrders, programme:screenProgramme})[tab]();
+  ({dashboard:screenDashboard, orders:screenOrders, planner:screenPlanner, programme:screenProgramme})[tab]();
   window.scrollTo(0,0);
 }
 
