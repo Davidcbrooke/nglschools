@@ -3343,35 +3343,57 @@ function planCalc(p){
 function planInputs(p){
   const num = (k, label, step = 1, pre = '', note = '') => `<div class="field"><label for="pl_${k}">${label}</label>
     <div style="display:flex;align-items:center;gap:6px">${pre ? `<span class="muted">${pre}</span>` : ''}<input class="input" id="pl_${k}" data-k="${k}" type="number" min="0" step="${step}" value="${esc(p[k])}"></div>${note ? `<p class="note" style="margin:4px 0 0">${note}</p>` : ''}</div>`;
-  const chk = (k, label) => `<label style="display:flex;gap:8px;align-items:center;margin:0 0 12px;font-weight:700"><input type="checkbox" data-k="${k}" ${p[k] ? 'checked' : ''} style="width:18px;height:18px"> ${label}</label>`;
+  const chk = (k, label, note = '') => `<label style="display:flex;gap:8px;align-items:center;margin:0 0 4px;font-weight:700"><input type="checkbox" data-k="${k}" ${p[k] ? 'checked' : ''} style="width:18px;height:18px"> ${label}</label>${note ? `<p class="note" style="margin:0 0 12px">${note}</p>` : ''}`;
+  const intro = t => `<p class="note" style="margin:-4px 0 14px">${t}</p>`;
   return `
+  <div class="card" style="margin:0 0 16px">
+    <h3 style="margin:0 0 8px">How to use the planner</h3>
+    <ol style="margin:0;padding-left:20px;line-height:1.6" class="muted">
+      <li><b>Your licence:</b> enter how many children take part across all your schools. This sets the band you pay NGL.</li>
+      <li><b>Option 1 and Option 2:</b> tick the ways you plan to run NGL Schools, then fill in your own prices and coaching time. You can run one or both.</li>
+      <li><b>Costs for both options:</b> your coach pay and how many children graduate.</li>
+      <li>Your profit updates at the bottom as you type. Grey text under each box explains it. NGL’s own prices are filled in for you and can’t be changed.</li>
+    </ol>
+  </div>
   <div class="grid2">
     <div class="card" style="margin:0">
-      <h3 style="margin:0 0 10px">Your licence</h3>
-      ${num('bandChildren', 'Children across your schools (sets your band)')}
-      <p class="note" id="pl_band" style="margin:-6px 0 12px"></p>
-      ${chk('vatRegistered', 'Our club is VAT registered (we reclaim the VAT on the licence)')}
-      <h3 style="margin:16px 0 10px">Shared</h3>
-      ${num('coachRate', 'Coach pay per hour', 0.5, '£', 'Include travel if you pay it')}
-      ${num('gradRate', 'Children who graduate each year (%)')}
-      ${num('newRate', 'New children each later year (%)', 1, '', 'Only new children need a book after year 1')}
+      <h3 style="margin:0 0 6px">1. Your licence</h3>
+      ${intro('What your club pays NGL each year.')}
+      ${num('bandChildren', 'Children across your schools', 1, '', 'The total number of children taking part in NGL Schools, across every school you work with (both options). This sets your licence band.')}
+      <p class="note" id="pl_band" style="margin:-6px 0 12px;color:var(--schools)"></p>
+      ${chk('vatRegistered', 'Our club is VAT registered', 'Tick if your club can reclaim VAT. If not, the 20% VAT on the licence is counted as a cost.')}
+      <h3 style="margin:18px 0 6px">2. Costs for both options</h3>
+      ${intro('These apply to Option 1 and Option 2.')}
+      ${num('coachRate', 'Coach pay per hour', 0.5, '£', 'What you pay a coach for an hour of their time, including travel if you pay it.')}
+      ${num('gradRate', 'Children who graduate each year (%)', 1, '', 'The share of children who complete a level and come to a Graduation. Families pay £10 each; you keep £5 and pay NGL £5, medal included.')}
+      ${num('newRate', 'New children each year after year 1 (%)', 1, '', 'Each child keeps one Awards Book for their whole time at school, so after year 1 only new children need a book.')}
     </div>
     <div class="card" style="margin:0">
-      ${chk('o1On', 'Option 1: Teacher-led')}
-      ${num('o1Schools', 'Schools')}
-      ${num('o1Children', 'Children in teacher-led classes')}
-      ${num('o1Fee', 'School licence fee per school, per year', 10, '£')}
-      ${num('o1BookPrice', 'Awards Book price to schools', 0.5, '£')}
-      ${num('o1Visits', 'Coach visits per school, per year')}
-      ${num('o1VisitHrs', 'Hours per visit', 0.5)}
-      ${num('o1TrainHrs', 'Teacher training hours per school', 0.5)}
+      ${chk('o1On', 'Option 1: Teacher-led', 'Your coaches train the school’s teachers, who then run NGL Schools in PE lessons. The school pays you.')}
+      ${num('o1Schools', 'Number of schools', 1, '', 'Schools where teachers will deliver the programme.')}
+      ${num('o1Children', 'Children in teacher-led classes', 1, '', 'All the children taking part in PE lessons across these schools.')}
+      ${num('o1Fee', 'Your yearly fee to each school', 10, '£', 'You set this. It’s what each school pays your club a year for training, monthly visits and support. NGL suggests from £950.')}
+      ${num('o1BookPrice', 'Your price for each Awards Book, to the school', 0.5, '£', 'You buy books from NGL at £5. You set the price you charge the school; we suggest £8.')}
+      ${num('o1Visits', 'Coach visits to each school, per year', 1, '', 'How often a coach visits to support lessons and assess awards. Monthly is 10 visits.')}
+      ${num('o1VisitHrs', 'Hours per visit', 0.5, '', 'Coach time for each visit, including travel time if you pay for it.')}
+      ${num('o1TrainHrs', 'Teacher training hours per school', 0.5, '', 'Time to train the school’s teachers at the start of the year.')}
     </div>
   </div>
   <div class="card" style="margin:16px 0 0">
-    ${chk('o2On', 'Option 2: After-school club')}
+    ${chk('o2On', 'Option 2: After-school club', 'Your coaches run a weekly gymnastics club in the school hall after school. Parents book and pay your club directly, so it costs the school nothing.')}
     <div class="grid2">
-      <div>${num('o2Children', 'Children in after-school clubs')}${num('o2Fee', 'Fee per session', 0.5, '£')}${num('o2Weeks', 'Weeks a year')}${num('o2BookPrice', 'Awards Book price to families', 0.5, '£')}</div>
-      <div>${num('o2Group', 'Children per coach (group size)')}${num('o2SessHrs', 'Coach hours paid per session', 0.25)}${num('o2Hall', 'Hall hire per session', 1, '£', 'Leave at 0 if the school provides the hall')}${num('o2Overheads', 'Admin, equipment and insurance (% of fees)')}</div>
+      <div>
+        ${num('o2Children', 'Children in after-school clubs', 1, '', 'All the children attending your after-school sessions, across every school.')}
+        ${num('o2Fee', 'Your fee per child, per session', 0.5, '£', 'You set this. What parents pay for each weekly session.')}
+        ${num('o2Weeks', 'Weeks a year', 1, '', 'How many weeks the club runs. A school year is about 36 weeks; 33 allows for the first and last weeks of term.')}
+        ${num('o2BookPrice', 'Your price for each Awards Book, to families', 0.5, '£', 'You buy books from NGL at £5. The suggested price to families is £10.')}
+      </div>
+      <div>
+        ${num('o2Group', 'Children per coach', 1, '', 'The most children one coach takes in a session. More children than this means another group and another coach.')}
+        ${num('o2SessHrs', 'Coach hours paid per session', 0.25, '', 'The time you pay a coach for each session, including setting up, packing away and travel.')}
+        ${num('o2Hall', 'Hall hire per session', 1, '£', 'What the school charges for the hall, if anything. Leave at 0 if the hall is free.')}
+        ${num('o2Overheads', 'Admin, equipment and insurance (% of fees)', 1, '', 'Running costs such as bookings, equipment wear and insurance, as a share of your fees.')}
+      </div>
     </div>
   </div>`;
 }
