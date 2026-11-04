@@ -3237,6 +3237,16 @@ function editClubModal(club, isAdminEdit){
     }catch(err){ console.error(err); btn.disabled = false; btn.textContent = 'Save'; m.querySelector('#ecErr').textContent = 'Couldn’t save. Please try again.'; }
   });
 }
+/* Pitch for schools: a ready-made PDF clubs give to headteachers and PE leads (no prices, so each club sets its own). */
+const SCHOOLS_PITCH_PDF = '/docs/NGL_Schools_Pitch_for_Schools.pdf';
+function schoolsPitchCardHTML(){
+  return `<div class="card">
+    <p class="eyebrow">For your schools</p>
+    <h2 style="margin:0 0 6px">NGL Schools pitch for headteachers</h2>
+    <p class="muted" style="margin:0 0 14px">An 8-page brochure to send or print for the schools you work with: why gymnastics, the NGL pathway, the changes to PE funding, and the two ways to run NGL Schools. It has no prices, so you can quote your own.</p>
+    <div class="btn-row"><a class="btn small" href="${SCHOOLS_PITCH_PDF}" target="_blank" rel="noopener">Open the pitch (PDF)</a><a class="btn ghost small" href="${SCHOOLS_PITCH_PDF}" download>Download</a><button class="btn ghost small" data-tab="planner">Work out your prices in the Profit planner</button></div>
+  </div>`;
+}
 function codeCardHTML(){
   const live = codeLive();
   return `
@@ -3542,6 +3552,8 @@ function screenDashboard(){
     </div>` : ''}
 
     ${licenceCardHTML()}
+
+    ${schoolsPitchCardHTML()}
 
     ${codeCardHTML()}
 
