@@ -625,7 +625,7 @@ function screenGraduation(){
       <ul class="facts">
         <li>Perform your routines in front of your family</li>
         <li>Held at your local British Gymnastics club where available, or at your school</li>
-        <li>Family spectators go free</li>
+        <li>£12 per gymnast, including one spectator; extra spectators £6</li>
         <li>Every graduate receives an exclusive NGL Schools Medal</li>
       </ul>
       <div class="medal-strip">${MEDALS.map((m,i)=>`<img src="data:image/jpeg;base64,${m}" alt="Level ${i+1} medal">`).join('')}</div>
@@ -659,8 +659,8 @@ function eventsHTML(list){
     <div class="when">${esc(evDateText(ev))}${ev.venue ? '<br>' + esc(ev.venue) : ''}</div>
     ${ev.schoolName ? `<div class="note" style="margin-bottom:6px">For ${esc(ev.schoolName)} gymnasts</div>` : ''}
     <ul class="facts">
-      <li>£10 per gymnast</li>
-      <li>Family spectators FREE</li>
+      <li>£12 per gymnast, including one spectator</li>
+      <li>Extra spectators £6 each</li>
       <li>NGL Graduation Medal included</li>
     </ul>
     ${ev.notes ? `<p class="muted" style="font-size:14px;margin:10px 0 0">${esc(ev.notes)}</p>` : ''}
@@ -673,7 +673,7 @@ async function loadEvents(){
   const box = () => document.getElementById('events');
   if(!FIREBASE_CONFIG){
     const d = new Date(); d.setDate(d.getDate() + 60);
-    const demo = [{title:'NGL Schools Graduation', date:d.toISOString().slice(0,10), time:'10:00', venue:session.clubName, price:10, notes:'Arrive 30 minutes early.'}];
+    const demo = [{title:'NGL Schools Graduation', date:d.toISOString().slice(0,10), time:'10:00', venue:session.clubName, price:12, spectatorPrice:6, notes:'Arrive 30 minutes early.'}];
     if(box()) box().innerHTML = eventsHTML(demo);
     return;
   }
