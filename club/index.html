@@ -3089,11 +3089,12 @@ function pitchHTML(signedInView){
       <h2>Finish the year with Graduation</h2>
       <p class="muted">Gymnasts who achieve all three certificates can perform their routines for their families at an NGL Graduation, at your club where available or at their school.</p>
       <table><tbody>
-        <tr><td>Gymnast</td><td class="num">£10</td></tr>
-        <tr><td>Parents &amp; family</td><td class="num">FREE</td></tr>
+        <tr><td>Gymnast, including one spectator</td><td class="num">£${GRAD_FAMILY_PRICE}</td></tr>
+        <tr><td>Each extra spectator</td><td class="num">£${GRAD_EXTRA_SPECTATOR}</td></tr>
         <tr><td>Exclusive NGL Graduation Medal</td><td class="num">Included</td></tr>
         ${signedInView ? `<tr><td>NGL charge to your club, per graduate (medal included)</td><td class="num">£${GRAD_NGL_FEE}</td></tr>
-        <tr><td><b>Your club keeps, per graduate</b></td><td class="num"><b>£${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}</b></td></tr>` : ''}
+        <tr><td><b>Your club keeps, per graduate</b></td><td class="num"><b>£${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}</b></td></tr>
+        <tr><td><b>Your club keeps, per extra spectator</b></td><td class="num"><b>£${GRAD_EXTRA_SPECTATOR}</b></td></tr>` : ''}
       </tbody></table>
     </div>
   </div>
@@ -3282,7 +3283,7 @@ const PLAN_DEFAULTS = {
   bandChildren: 100, vatRegistered: false,
   o1On: true, o1Schools: 2, o1Children: 100, o1Fee: 950, o1BookPrice: 8, o1Visits: 10, o1VisitHrs: 2, o1TrainHrs: 3,
   o2On: true, o2Children: 30, o2Fee: 6, o2Weeks: 33, o2Group: 15, o2SessHrs: 1.5, o2Overheads: 10, o2Hall: 0, o2BookPrice: 10,
-  coachRate: 25, gradRate: 60, newRate: 33, certsPerChild: 3
+  coachRate: 25, gradRate: 60, extraSpect: 1, newRate: 33, certsPerChild: 3
 };
 function planStart(){
   const saved = (S.club && S.club.projection) || {};
@@ -3314,7 +3315,8 @@ function planCalc(p){
       inc.push(['Weekly club fees', `${n} children × ${gbp(p.o2Fee)} × ${p.o2Weeks} weeks`, n * p.o2Fee * p.o2Weeks]);
       inc.push(['Awards Books sold to families', `${books} × ${gbp(p.o2BookPrice)}`, books * p.o2BookPrice]);
     }
-    inc.push(['Graduation (you keep ' + gbp(gradKeep) + ')', `${grads} graduates`, grads * gradKeep]);
+    inc.push(['Graduation (you keep ' + gbp(gradKeep) + ' a gymnast)', `${grads} graduates`, grads * gradKeep]);
+    inc.push(['Extra spectator tickets', `${grads} × ${p.extraSpect} × ${gbp(GRAD_EXTRA_SPECTATOR)}`, Math.round(grads * p.extraSpect) * GRAD_EXTRA_SPECTATOR]);
     cost.push(['Awards Books from NGL', `${books} × ${gbp(book)}`, books * book]);
     cost.push(['Certificates from NGL', `${n * p.certsPerChild} × ${gbp(cert)}`, r2(n * p.certsPerChild * cert)]);
     const items = books + Math.ceil(n * p.certsPerChild / 10);
@@ -3365,7 +3367,8 @@ function planInputs(p){
       <h3 style="margin:18px 0 6px">2. Costs for both options</h3>
       ${intro('These apply to Option 1 and Option 2.')}
       ${num('coachRate', 'Coach pay per hour', 0.5, '£', 'What you pay a coach for an hour of their time, including travel if you pay it.')}
-      ${num('gradRate', 'Children who graduate each year (%)', 1, '', 'The share of children who complete a level and come to a Graduation. Families pay £10 each; you keep £5 and pay NGL £5, medal included.')}
+      ${num('gradRate', 'Children who graduate each year (%)', 1, '', 'The share of children who complete a level and come to a Graduation. Families pay £12, including one spectator; you keep £7 and pay NGL £5, medal included.')}
+      ${num('extraSpect', 'Extra spectators per graduate', 0.5, '', 'Average extra family members at each Graduation, at £6 each. You keep all of it. We expect about 1.')}
       ${num('newRate', 'New children each year after year 1 (%)', 1, '', 'Each child keeps one Awards Book for their whole time at school, so after year 1 only new children need a book.')}
     </div>
     <div class="card" style="margin:0">
@@ -3428,7 +3431,7 @@ function planResults(p){
         <tr><td><b>Total costs</b></td>${col(-y1.C)}${col(-y2.C)}</tr>
         <tr><td><b style="font-size:17px">Profit</b></td><td class="num" style="font-size:17px">${sign(y1.P)}</td><td class="num" style="font-size:17px">${sign(y2.P)}</td></tr>
       </tbody></table></div>
-    <p class="note" style="margin:10px 0 0">NGL prices are live: books ${gbp(shopItem('book').price)}, certificates ${gbp(shopItem('cert').price)}, Graduation ${gbp(GRAD_NGL_FEE)} a graduate (families pay ${gbp(GRAD_FAMILY_PRICE)}). Everything else is your own estimate. This is a planning guide, not financial advice.</p>`;
+    <p class="note" style="margin:10px 0 0">NGL prices are live: books ${gbp(shopItem('book').price)}, certificates ${gbp(shopItem('cert').price)}, Graduation ${gbp(GRAD_NGL_FEE)} a graduate (families pay ${gbp(GRAD_FAMILY_PRICE)} including one spectator, extra spectators ${gbp(GRAD_EXTRA_SPECTATOR)}). Everything else is your own estimate. This is a planning guide, not financial advice.</p>`;
   return R;
 }
 function planRead(){
@@ -3463,7 +3466,7 @@ function planPrintHTML(p, R){
     ${block('Option 1: Teacher-led', R.y1.o1, R.y2.o1)}${block('Option 2: After-school club', R.y1.o2, R.y2.o2)}
     <tr><td>NGL Schools Club Licence, ${esc(R.band.short)}${R.licVat ? ' (incl. VAT)' : ''}</td><td class="num">${gbp(-R.y1.lic)}</td><td class="num">${gbp(-R.y2.lic)}</td></tr>
     <tr class="inv-total"><td>Profit</td><td class="num">${gbp(R.y1.P)}</td><td class="num">${gbp(R.y2.P)}</td></tr></tbody></table>
-    <p class="inv-sub">Assumptions: coach pay ${gbp(p.coachRate)}/hr; ${p.gradRate}% graduate; ${p.newRate}% new children in later years${p.o1On ? `; Option 1: ${gbp(p.o1Fee)} per school, ${p.o1Visits} visits of ${p.o1VisitHrs} hrs, ${p.o1TrainHrs} hrs training` : ''}${p.o2On ? `; Option 2: ${gbp(p.o2Fee)} a session, ${p.o2Weeks} weeks, ${p.o2Group} per coach, ${p.o2SessHrs} coach hrs a session, ${p.o2Overheads}% overheads${p.o2Hall ? ', hall ' + gbp(p.o2Hall) + ' a session' : ''}`: ''}. A planning guide, not financial advice.</p>
+    <p class="inv-sub">Assumptions: coach pay ${gbp(p.coachRate)}/hr; ${p.gradRate}% graduate with ${p.extraSpect} extra spectator${p.extraSpect === 1 ? '' : 's'} each; ${p.newRate}% new children in later years${p.o1On ? `; Option 1: ${gbp(p.o1Fee)} per school, ${p.o1Visits} visits of ${p.o1VisitHrs} hrs, ${p.o1TrainHrs} hrs training` : ''}${p.o2On ? `; Option 2: ${gbp(p.o2Fee)} a session, ${p.o2Weeks} weeks, ${p.o2Group} per coach, ${p.o2SessHrs} coach hrs a session, ${p.o2Overheads}% overheads${p.o2Hall ? ', hall ' + gbp(p.o2Hall) + ' a session' : ''}`: ''}. A planning guide, not financial advice.</p>
     <div class="inv-foot">National Gymnastics League · NGL Schools</div></div>`;
 }
 document.addEventListener('click', async e => {
@@ -3813,7 +3816,8 @@ async function screenAdmin(){
 
 
 /* ---------- Graduation events ---------- */
-const GRAD_FAMILY_PRICE = 10;   // what families pay the club per gymnast
+const GRAD_FAMILY_PRICE = 12;   // what families pay the club per gymnast, including one spectator
+const GRAD_EXTRA_SPECTATOR = 6; // each extra spectator; the club keeps all of it
 const GRAD_NGL_FEE = 5;         // what NGL invoices the club per graduate (medal included)
 const isLicence = o => (o.type || 'licence') === 'licence';
 function evDateText(ev){
@@ -3834,7 +3838,7 @@ function medalsModal(ev){
       <div class="field"><label for="mq">How many gymnasts are graduating?</label><input class="input" id="mq" type="number" min="1" max="2000" value="20" required></div>
       ${already ? `<p class="note">You’ve already ordered ${already} medals for this Graduation. Order extra here if more gymnasts have booked.</p>` : ''}
       <div id="msum"></div>
-      <p class="note">Each graduate’s £${GRAD_FAMILY_PRICE}: your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}, NGL invoices £${GRAD_NGL_FEE} including the medal. Medals are sent once payment is received.</p>
+      <p class="note">Each graduate’s £${GRAD_FAMILY_PRICE} (including one spectator): your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}, NGL invoices £${GRAD_NGL_FEE} including the medal. Extra spectators at £${GRAD_EXTRA_SPECTATOR} are all yours. Medals are sent once payment is received.</p>
       <div class="btn-row" style="margin-top:12px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
     </form>`);
   const q = m.querySelector('#mq');
@@ -3935,7 +3939,7 @@ function graduationsHTML(){
     ${up.length ? up.map(ev => `<div class="grad-row">
         <div><b>${esc(ev.title || 'NGL Schools Graduation')}</b>
           <div class="muted" style="font-size:14px">${esc(evDateText(ev))}${ev.venue ? ' · ' + esc(ev.venue) : ''}</div>
-          <div class="note">${ev.schoolName ? 'For ' + esc(ev.schoolName) : 'For all your schools'} · Families pay £${GRAD_FAMILY_PRICE} · ${medalsFor(ev.id) ? medalsFor(ev.id) + ' medals ordered' : 'No medals ordered yet'}</div></div>
+          <div class="note">${ev.schoolName ? 'For ' + esc(ev.schoolName) : 'For all your schools'} · Families pay £${GRAD_FAMILY_PRICE} a gymnast, extra spectators £${GRAD_EXTRA_SPECTATOR} · ${medalsFor(ev.id) ? medalsFor(ev.id) + ' medals ordered' : 'No medals ordered yet'}</div></div>
         <div class="row-actions"><button class="btn small" data-act="order-medals" data-ev="${esc(ev.id)}">Order medals</button><button class="btn ghost small" data-act="edit-grad" data-ev="${esc(ev.id)}">Edit</button><button class="btn ghost small" data-act="del-grad" data-ev="${esc(ev.id)}">Delete</button></div>
       </div>`).join('') : '<p class="muted" style="margin:12px 0 0">No upcoming Graduations yet.</p>'}
     ${past.length ? `<p class="note" style="margin:10px 0 0">${past.length} past Graduation${past.length > 1 ? 's' : ''} no longer shown to families.</p>` : ''}
@@ -3955,7 +3959,7 @@ function gradModal(ev){
         <div class="field"><label for="gtm">Start time</label><input class="input" id="gtm" type="time" value="${esc(ev.time || '10:00')}"></div>
       </div>
       <div class="field"><label for="gv">Venue</label><input class="input" id="gv" value="${esc(ev.venue || S.club.name || '')}" placeholder="e.g. SAADI Gymnastics, Harpenden" required></div>
-      <div class="grad-fee"><b>Families pay £${GRAD_FAMILY_PRICE} per gymnast</b>, and family spectators go free. Your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}; NGL invoices your club £${GRAD_NGL_FEE} per graduate, including the exclusive NGL Graduation Medal.</div>
+      <div class="grad-fee"><b>Families pay £${GRAD_FAMILY_PRICE} per gymnast, including one spectator.</b> Extra spectators are £${GRAD_EXTRA_SPECTATOR} each. Your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE} per gymnast and all the extra spectator money; NGL invoices your club £${GRAD_NGL_FEE} per graduate, including the exclusive NGL Graduation Medal.</div>
       <div class="field"><label for="gb">How families book (optional link)</label><input class="input" id="gb" type="url" value="${esc(ev.bookingUrl || '')}" placeholder="https://… your club’s booking page"></div>
       <div class="field"><label for="gn">Extra information for families (optional)</label><input class="input" id="gn" value="${esc(ev.notes || '')}" placeholder="e.g. Arrive 30 minutes early, wear your NGL T-shirt"></div>
       <p class="error" id="gErr"></p>
@@ -3966,7 +3970,7 @@ function gradModal(ev){
     const g = id => m.querySelector(id).value.trim();
     const sid = g('#gs'); const school = S.schools.find(s => s.id === sid);
     const d = {title:g('#gt'), schoolId:sid, schoolName:school ? school.name : '', date:g('#gd'), time:g('#gtm'), venue:g('#gv'),
-               price: GRAD_FAMILY_PRICE, bookingUrl:g('#gb'), notes:g('#gn')};
+               price: GRAD_FAMILY_PRICE, spectatorPrice: GRAD_EXTRA_SPECTATOR, bookingUrl:g('#gb'), notes:g('#gn')};
     const btn = m.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
     try{ await api.saveEvent(ev.id, d); m.remove(); show(); }
     catch(err){ console.error(err); btn.disabled = false; btn.textContent = 'Try again'; m.querySelector('#gErr').textContent = 'Couldn’t save the Graduation. Please try again.'; }
