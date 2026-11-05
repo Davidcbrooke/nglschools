@@ -2630,7 +2630,7 @@ const gbp = n => n == null ? 'Agreement' : (n < 0 ? '−£' : '£') + Math.abs(n
 function toDate(c){ if(!c) return null; if(typeof c.toDate === 'function') return c.toDate(); if(c.seconds) return new Date(c.seconds * 1000); return new Date(c); }
 function addYear(d){ const x = new Date(d); x.setFullYear(x.getFullYear() + 1); return x; }
 // A licence runs 12 months from activation; a renewal paid early starts when the current one ends.
-function licenceExpiry(lic, now = new Date()){ const cur = lic && lic.expires ? toDate(lic.expires) : null; return addYear(cur && cur > now ? cur : now); }
+function licenceExpiry(lic, now = new Date()){ const cur = lic && !lic.trial && lic.expires ? toDate(lic.expires) : null; return addYear(cur && cur > now ? cur : now); }
 const bandOf = k => SCHOOLS_BANDS.find(b => b.key === k) || null;
 const nextBand = key => SCHOOLS_BANDS[Math.min(SCHOOLS_BANDS.length - 1, SCHOOLS_BANDS.findIndex(b => b.key === key) + 1)];
 function monthsRemaining(lic, now = new Date()){
@@ -2649,9 +2649,10 @@ function licState(club, orders, now = new Date()){
   const pending = (orders || []).some(o => o.type === 'club-licence' && (o.kind === 'start' || o.kind === 'renew') && o.status !== 'paid');
   if(lic && lic.status === 'active' && lic.expires){
     const exp = toDate(lic.expires), days = Math.ceil((exp - now) / 86400000);
+    if(lic.trial) return days > 0 ? {key:'active', trial:true, band: bandOf(lic.band), exp, days, pending} : {key: pending ? 'awaiting' : 'none', trialEnded:exp, pending};
     return {key: days > 0 ? 'active' : 'expired', band: bandOf(lic.band), exp, days, pending};
   }
-  return {key: pending ? 'awaiting' : 'none', band: lic ? bandOf(lic.band) : null, pending};
+  return {key: pending ? 'awaiting' : 'none', band: lic && !lic.trial ? bandOf(lic.band) : null, pending};
 }
 const licActive = () => licState(S.club, S.orders).key === 'active';
 /* Family code access: off | live | trial | trial-ended. A trial switches the family code on until a date
@@ -2670,12 +2671,12 @@ function bandCheck(club = S.club, schools = S.schools, orders = S.orders){
   const count = childrenTotal(schools), need = bandForCount(count);
   const cur = bandOf(club && club.schools && club.schools.band);
   const pending = (orders || []).find(o => o.type === 'club-licence' && o.kind === 'upgrade' && o.status !== 'paid' && o.status !== 'sent');
-  return {count, need, cur, over: !!cur && bandIndex(need.key) > bandIndex(cur.key), pending};
+  return {count, need, cur, over: !!cur && !(club && club.schools && club.schools.trial) && bandIndex(need.key) > bandIndex(cur.key), pending};
 }
 function otherLicencePrices(club, now = new Date()){
   return Object.keys(OTHER_PATHWAY_PRICES).map(k => {
     const lic = club && club[k];
-    if(!lic || lic.status !== 'active' || (lic.expires && toDate(lic.expires) < now)) return 0;
+    if(!lic || lic.trial || lic.status !== 'active' || (lic.expires && toDate(lic.expires) < now)) return 0;
     return OTHER_PATHWAY_PRICES[k][lic.band] || 0;
   }).filter(Boolean);
 }
@@ -2917,17 +2918,21 @@ const liveApi = {
     const clubRef = fs.doc(D, 'clubs', club.id);
     const codeRef = club.accessCode ? fs.doc(D, 'accessCodes', club.accessCode) : null;
     let upd;
+    const lic = club.schools || null, paid = lic && !lic.trial;
     if(mode === 'trial'){
+      // Full Schools Club Hub access (as if licensed) plus the family code, until the end of the last day
       const until = new Date(); until.setDate(until.getDate() + days); until.setHours(23, 59, 0, 0);
       const ts = fs.Timestamp.fromDate(until);
-      upd = {codeActive:true, codeTrialUntil:ts};
+      upd = {codeActive:true, codeTrialUntil:ts,
+             schools:{status:'active', trial:true, band:(lic && lic.band) || bandForCount(club.schoolsChildren || 0).key, season:S.season, expires:ts, activatedAt:fs.serverTimestamp()}};
       if(codeRef) batch.update(codeRef, {status:'active', expires:ts});
     }else if(mode === 'off'){
-      upd = {codeActive:false, codeTrialUntil:fs.deleteField()};
+      // Ends a trial; a paid licence is paused (kept, so it can be switched back on)
+      upd = {codeActive:false, codeTrialUntil:fs.deleteField(), schools: paid ? {...lic, status:'suspended'} : fs.deleteField()};
       if(codeRef) batch.update(codeRef, {status:'inactive'});
     }else{
-      const licExp = club.schools && club.schools.status === 'active' && club.schools.expires ? club.schools.expires : null;
-      upd = {codeActive:true, codeTrialUntil:fs.deleteField()};
+      const licExp = paid && lic.expires ? lic.expires : null;
+      upd = {codeActive:true, codeTrialUntil:fs.deleteField(), ...(paid ? {schools:{...lic, status:'active'}} : {schools:fs.deleteField()})};
       if(codeRef) batch.update(codeRef, {status:'active', expires: licExp || fs.deleteField()});
     }
     batch.update(clubRef, upd);
@@ -3002,8 +3007,9 @@ const demoApi = {
   async deleteEvent(id){ S.events = S.events.filter(e => e.id !== id); },
   async adminUpdateClub(club, d, regenerate){ Object.assign(S.club, d); if(regenerate) S.club.accessCode = newAccessCode(S.club.name); },
   async adminSetAccess(club, mode, days){
-    if(mode === 'trial'){ const u = new Date(); u.setDate(u.getDate() + days); u.setHours(23, 59, 0, 0); Object.assign(S.club, {codeActive:true, codeTrialUntil:u}); }
-    else { S.club.codeActive = mode !== 'off'; delete S.club.codeTrialUntil; }
+    const lic = S.club.schools, paid = lic && !lic.trial;
+    if(mode === 'trial'){ const u = new Date(); u.setDate(u.getDate() + days); u.setHours(23, 59, 0, 0); Object.assign(S.club, {codeActive:true, codeTrialUntil:u, schools:{status:'active', trial:true, band:(lic && lic.band) || bandForCount(S.club.schoolsChildren || 0).key, season:S.season, expires:u}}); }
+    else { S.club.codeActive = mode !== 'off'; delete S.club.codeTrialUntil; if(paid) S.club.schools = {...lic, status: mode === 'off' ? 'suspended' : 'active'}; else delete S.club.schools; }
   },
   async adminLoad(){ return {clubs:[{id:'demo', ...S.club}], orders:S.orders.slice().reverse()}; },
   async adminMarkPaid(order, club){
@@ -3282,23 +3288,24 @@ function clubDetailsHTML(){
     </div></div>`;
 }
 function accessBoxHTML(club){
-  const a = codeAccess(club), lic = licState(club, []);
-  const now = a.key === 'trial' ? `On a free trial until <b>${fmtDate(a.until)}</b>.`
-    : a.key === 'trial-ended' ? `Free trial ended on ${fmtDate(a.until)}. The family code no longer works.`
-    : a.key === 'live' ? (lic.key === 'active' ? `Live with their Club Licence, to ${fmtDate(lic.exp)}.` : 'Live, with no end date.')
-    : 'Off. Families can’t use the code.';
-  const licOn = lic.key === 'active';
+  const a = codeAccess(club), lic = licState(club, []), susp = club.schools && club.schools.status === 'suspended';
+  const now = lic.trial ? `On a free trial until <b>${fmtDate(lic.exp)}</b>: full Schools Club Hub and family code.`
+    : lic.trialEnded ? `Free trial ended on ${fmtDate(lic.trialEnded)}.`
+    : susp ? `Switched off. Their paid licence (to ${fmtDate(toDate(club.schools.expires))}) is paused.`
+    : a.key === 'live' ? (lic.key === 'active' ? `Live with their Club Licence, to ${fmtDate(lic.exp)}.` : 'Family code live, with no end date (no Club Hub access).')
+    : 'Off. No Club Hub access and families can’t use the code.';
+  const licOn = lic.key === 'active' && !lic.trial;
   return `<div class="field" style="border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:12px 14px;margin:6px 0 14px">
-    <label>Family code access</label>
+    <label>Club access</label>
     <p class="note" style="margin:0 0 10px">${now}</p>
-    ${licOn ? '' : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+    ${licOn || susp ? '' : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
       <button class="btn small" type="button" data-access="trial">Free trial for</button>
       <input class="input" id="etd" type="number" min="1" max="90" value="7" style="width:72px;padding:8px"> <span class="note">days</span></div>`}
     <div class="btn-row">
-      ${a.key === 'off' || a.key === 'trial-ended' || a.key === 'trial' ? `<button class="btn ghost small" type="button" data-access="on">${licOn ? 'Switch back on (to licence end)' : 'Switch on, no end date'}</button>` : ''}
-      ${a.key !== 'off' ? '<button class="btn ghost small" type="button" data-access="off">Switch off now</button>' : ''}
+      ${susp ? `<button class="btn ghost small" type="button" data-access="on">Switch back on (to licence end)</button>` : ''}
+      ${a.key !== 'off' || lic.trial ? '<button class="btn ghost small" type="button" data-access="off">Switch off now</button>' : ''}
     </div>
-    <p class="note" style="margin:8px 0 0">A trial switches on the family code only. The club can’t order until they’ve paid for a Club Licence, which replaces the trial.</p>
+    <p class="note" style="margin:8px 0 0">A trial opens the full Schools Club Hub and the family code, as if they had a licence. Clicking it again restarts the days from today. When they pay for a Club Licence, it replaces the trial and their 12 months start that day.</p>
   </div>`;
 }
 function editClubModal(club, isAdminEdit){
@@ -3830,7 +3837,11 @@ function licenceCardHTML(){
   const bc = bandCheck();
   const disc = S.club && otherLicencePrices(S.club).length ? '<p class="note" style="margin:8px 0 0">Your club already holds another NGL pathway licence, so you get 5% off this one if it isn’t your most expensive.</p>' : '';
   let head, body = '', btns = '';
-  if(st.key === 'active'){
+  if(st.key === 'active' && st.trial){
+    head = `Schools Club Hub: <span style="color:var(--ok)">Free trial</span>`;
+    body = `<p class="muted" style="margin:6px 0 0">You have full access to the Schools Club Hub and your family code until <b>${fmtDate(st.exp)}</b>${st.days <= 3 ? ` <span class="tag wait">${st.days} day${st.days === 1 ? '' : 's'} left</span>` : ''}. Start your Club Licence to keep everything switched on: your 12 months begin when payment arrives.</p>`;
+    btns = `${st.pending ? '' : '<button class="btn small" data-act="licence" data-kind="start">Start your licence</button>'}<button class="btn ghost small" data-act="supplies">Order books, certificates &amp; t-shirts</button>`;
+  }else if(st.key === 'active'){
     head = `Schools Club Licence: <span style="color:var(--ok)">Active</span>`;
     body = `<p class="muted" style="margin:6px 0 0">${esc(st.band ? st.band.label : '')} · renews ${fmtDate(st.exp)}${st.days <= 45 ? ` <span class="tag wait">${st.days} days left</span>` : ''}</p>
       <div class="kpis">
@@ -3854,7 +3865,7 @@ function licenceCardHTML(){
     btns = '<button class="btn small" data-act="licence" data-kind="renew">Renew licence</button>';
   }else{
     head = 'Start your Schools Club Licence';
-    body = `<p class="muted" style="margin:6px 0 0">One yearly licence for your club, priced by how many Schools gymnasts you coach. From ${gbp(SCHOOLS_BANDS[0].price)} a year + VAT. It switches on your family code and lets you order books, certificates and t-shirts.</p>`;
+    body = `${st.trialEnded ? `<p class="muted" style="margin:6px 0 0"><b>Your free trial ended on ${fmtDate(st.trialEnded)}.</b></p>` : ''}<p class="muted" style="margin:6px 0 0">One yearly licence for your club, priced by how many Schools gymnasts you coach. From ${gbp(SCHOOLS_BANDS[0].price)} a year + VAT. It switches on your family code and lets you order books, certificates and t-shirts.</p>`;
     btns = '<button class="btn small" data-act="licence" data-kind="start">Start your licence</button><button class="btn ghost small" data-tab="programme">See pricing</button>';
   }
   return `<div class="card band-card">
@@ -3910,7 +3921,7 @@ function screenOrders(){
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div><h2 style="margin:0 0 4px">Orders &amp; invoices</h2><p class="muted" style="margin:0">Each order has an invoice. Pay by bank transfer quoting the order number.</p></div>
-        <div class="btn-row">${st.key === 'active' ? '<button class="btn small" data-act="supplies">Order supplies</button>' : (st.key === 'awaiting' ? '' : `<button class="btn small" data-act="licence" data-kind="${st.key === 'expired' ? 'renew' : 'start'}">${st.key === 'expired' ? 'Renew licence' : 'Start your licence'}</button>`)}</div>
+        <div class="btn-row">${st.key === 'active' ? (st.trial && !st.pending ? '<button class="btn ghost small" data-act="licence" data-kind="start">Start your licence</button>' : '') + '<button class="btn small" data-act="supplies">Order supplies</button>' : (st.key === 'awaiting' ? '' : `<button class="btn small" data-act="licence" data-kind="${st.key === 'expired' ? 'renew' : 'start'}">${st.key === 'expired' ? 'Renew licence' : 'Start your licence'}</button>`)}</div>
       </div>
       <div class="table-wrap" style="margin-top:10px"><table>
         <thead><tr><th>Order</th><th>What</th><th class="num">Total</th><th>Status</th><th></th></tr></thead>
@@ -4093,7 +4104,9 @@ async function screenAdmin(){
         <thead><tr><th>Club</th><th>BG no.</th><th>Contact</th><th>Family code</th><th>Schools Club Licence</th><th class="num">Children</th><th></th></tr></thead>
         <tbody>${ADM.clubs.map(c => {
           const st = licState(c, ADM.orders.filter(o => o.clubId === c.id));
-          const lic = st.key === 'active' ? `<span class="tag ok">${esc(st.band ? st.band.short : 'Active')}</span><div class="note">${st.band ? gbp(st.band.price) + ' · ' : ''}to ${fmtDate(st.exp)}</div>`
+          const lic = st.trial ? `<span class="tag ok">Free trial</span><div class="note">to ${fmtDate(st.exp)}</div>`
+            : c.schools && c.schools.status === 'suspended' ? '<span class="tag wait">Switched off</span>'
+            : st.key === 'active' ? `<span class="tag ok">${esc(st.band ? st.band.short : 'Active')}</span><div class="note">${st.band ? gbp(st.band.price) + ' · ' : ''}to ${fmtDate(st.exp)}</div>`
             : st.key === 'expired' ? `<span class="tag wait">Expired</span><div class="note">${fmtDate(st.exp)}</div>`
             : st.key === 'awaiting' ? '<span class="tag wait">Awaiting payment</span>' : '<span class="muted">None</span>';
           return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.bgNumber||'')}</td><td>${esc(c.contact||'')}<div class="note">${esc(c.email||'')}</div></td>
