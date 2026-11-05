@@ -3646,23 +3646,28 @@ const SEC_BOOKS = {
   pink:  {name:'Book 2 · Pink', soon:true},
   indigo:{name:'Book 4 · Indigo', soon:true}
 };
+const SEC_LEVELS = [9, 10, 11, 12];
+const SEC_LVL_COL = {9:'#00b5b8', 10:'#1960ab', 11:'#e3474a', 12:'#28225c'};
 const SEC_EQUIP = {
+  floor:  {label:'Floor', opts:[['mats','Gym mats on the hall floor'],['sprung','Sprung floor or gymnastics area'],['none','Leave out']]},
   vault:  {label:'Vault', opts:[['full','Vault table + springboard'],['box','Box or stacked mats + springboard'],['none','No vault']]},
   beam:   {label:'Beam', opts:[['beam','Beam (low or high)'],['bench','Bench instead of beam'],['line','Floor line or floor beam'],['none','Leave out']]},
   bars:   {label:'Bars', opts:[['bars','Low bar or parallel bars'],['wall','Wall bars only'],['none','Leave out']]},
   rebound:{label:'Rebound', opts:[['tramp','Trampette or mini-tramp'],['none','Leave out']]}
 };
 const SEC_ADAPT = {
+  'floor:mats':'Floor on gym mats: lay the mats in a strip for rolls, handstands and cartwheels. Do bridges, round-offs and kickovers on mats only.',
   'vault:box':'No vault table: use a box top or stacked mats (60cm) with the springboard, and mark table skills as adapted.',
   'beam:bench':'Beam skills on a bench (flat or upturned). Mark the skill as adapted in the Awards Book.',
   'beam:line':'Beam skills along a taped line or floor beam. Mark the skill as adapted in the Awards Book.',
   'bars:wall':'Wall bars: hangs, swings, chin-ups and leg lifts. Replace cast and circle skills with front support holds on a bench, and mark them as adapted.'
 };
-const SEC_DEFAULTS = {book:'teal', level:9, lessons:6, mins:50, warm:8, cool:5, classSize:30, vault:'box', beam:'bench', bars:'none', rebound:'none'};
+const SEC_DEFAULTS = {book:'teal', level:'all', floor:'mats', lessons:6, mins:50, warm:8, cool:5, classSize:30, vault:'box', beam:'bench', bars:'none', rebound:'none'};
 let SEC = null;
 function secStart(){ return {...SEC_DEFAULTS, ...((S.club && S.club.secPlan) || {}), ...(SEC || {})}; }
 function secStations(p){
-  const st = ['floor'];
+  const st = [];
+  if(p.floor !== 'none') st.push('floor');
   if(p.vault !== 'none') st.push('vault');
   if(p.beam !== 'none') st.push('beam');
   if(p.bars !== 'none') st.push('bars');
@@ -3671,31 +3676,41 @@ function secStations(p){
   return st;
 }
 function secCalc(p){
-  const book = SEC_BOOKS[p.book], L = book.levels[p.level], st = secStations(p);
+  const all = p.level === 'all', book = SEC_BOOKS[all ? 'teal' : p.book] || SEC_BOOKS.teal, st = secStations(p);
+  const L = all ? null : book.levels[p.level];
   const N = Math.max(3, Math.min(15, Math.round(p.lessons) || 6));
   const T = N - 2, rot = Math.max(3, Math.floor((p.mins - p.warm - p.cool) / st.length));
   const group = Math.ceil((p.classSize || 0) / st.length);
   const lessons = [];
   for(let k = 1; k <= T; k++){
     const a = Math.floor((k - 1) * 4 / T), b = Math.max(a + 1, Math.floor(k * 4 / T));
-    lessons.push({n:k, title: k === 1 ? 'Introduce the level' : (k === T ? 'Secure every skill' : 'Develop the skills'),
-      st: st.map(ap => ({ap, focus: L[ap].slice(a, b), recap: L[ap].slice(0, a)}))});
+    lessons.push({n:k, title: k === 1 ? (all ? 'Introduce each level' : 'Introduce the level') : (k === T ? 'Secure every skill' : 'Develop the skills'),
+      st: st.map(ap => all
+        ? {ap, levels: SEC_LEVELS.map(lv => ({lv, focus: book.levels[lv][ap].slice(a, b), recap: book.levels[lv][ap].slice(0, a)}))}
+        : {ap, focus: L[ap].slice(a, b), recap: L[ap].slice(0, a)})});
   }
   lessons.push({n:T + 1, title:'Performance routines', perf:true});
   lessons.push({n:T + 2, title:'Assessment', assess:true});
-  const notes = ['vault','beam','bars'].map(k => SEC_ADAPT[k + ':' + p[k]]).filter(Boolean);
-  return {book, L, st, rot, group, lessons, notes};
+  const notes = ['floor','vault','beam','bars'].map(k => SEC_ADAPT[k + ':' + p[k]]).filter(Boolean);
+  if(all) notes.unshift('All Levels: each pupil works on the skills for their own level (9 to 12) at every station, so one plan runs the whole mixed class.');
+  return {all, book, L, st, rot, group, lessons, notes};
 }
+const secLvlTag = lv => `<span style="display:inline-block;min-width:30px;text-align:center;padding:1px 6px;border-radius:6px;background:${SEC_LVL_COL[lv]};color:#fff;font-size:11px;font-weight:800;margin-right:6px">L${lv}</span>`;
+const secRoutineAps = p => ['floor','vault','beam'].filter(ap => p[ap] !== 'none');
+const secLevelName = p => p.level === 'all' ? 'All Levels' : 'Level ' + p.level;
 function secLessonHTML(R, p, l){
   const ch = ap => `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${SEC_APP[ap].col};color:#fff;font-size:12px;font-weight:800">${SEC_APP[ap].name}</span>`;
   const time = `Warm-up ${p.warm} min · ${R.st.length} stations × ${R.rot} min · cool-down ${p.cool} min`;
   let body;
   if(l.perf){
     body = `<p class="muted" style="margin:0 0 8px">Practise the Performance routines. They're the same routines used in the clubs' NGL Recreational competitions.</p>
-      <ul style="margin:0;padding-left:20px;line-height:1.6">${['floor','vault','beam'].filter(ap => ap === 'floor' || p[ap] !== 'none').map(ap => `<li><b>${SEC_APP[ap].name}:</b> ${esc(R.book.routines[ap])}</li>`).join('')}</ul>
+      <ul style="margin:0;padding-left:20px;line-height:1.6">${secRoutineAps(p).map(ap => `<li><b>${SEC_APP[ap].name}:</b> ${esc(R.book.routines[ap])}</li>`).join('')}</ul>
       <p class="note" style="margin:8px 0 0">Pupils not yet performing a routine work on any skill they haven't secured.</p>`;
   }else if(l.assess){
-    body = `<p class="muted" style="margin:0">Rotate through the stations and assess each pupil on the Level ${p.level} skills. Sign off every skill shown in the pupil's Awards Book. A pupil who shows every skill has passed the level and gets their certificate; anything not passed is worked on again in the next block.</p>`;
+    body = `<p class="muted" style="margin:0">Rotate through the stations and assess each pupil on the ${R.all ? 'skills for their own level' : `Level ${p.level} skills`}. Sign off every skill shown in the pupil's Awards Book. A pupil who shows every skill has passed the level and gets their certificate; anything not passed is worked on again in the next block.</p>`;
+  }else if(R.all){
+    body = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">${l.st.map(s => `<div style="background:var(--navy-2);border-radius:12px;padding:10px 12px">
+        ${ch(s.ap)}<div style="margin-top:8px;font-size:14px;line-height:1.45">${s.levels.map(x => `<div style="display:flex;align-items:flex-start;margin:0 0 6px">${secLvlTag(x.lv)}<span><b>${esc(x.focus.join('; '))}</b></span></div>`).join('')}</div></div>`).join('')}</div>`;
   }else{
     body = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">${l.st.map(s => `<div style="background:var(--navy-2);border-radius:12px;padding:10px 12px">
         ${ch(s.ap)}<ul style="margin:8px 0 0;padding-left:18px;line-height:1.45;font-size:14px">${s.focus.map(x => `<li><b>${esc(x)}</b></li>`).join('')}${s.recap.length ? `<li class="muted">Recap: ${esc(s.recap.join('; '))}</li>` : ''}</ul></div>`).join('')}</div>`;
@@ -3706,10 +3721,11 @@ function secLessonHTML(R, p, l){
 }
 function secOut(){
   const p = secRead(); SEC = p;
+  const bw = document.getElementById('sec_bookwrap'); if(bw) bw.hidden = p.level === 'all';
   const out = document.getElementById('sec_out'); if(!out) return;
   const R = secCalc(p);
   out.innerHTML = `<div class="card" style="margin:0 0 12px">
-      <h3 style="margin:0 0 6px">Level ${p.level} block: ${R.lessons.length} lessons</h3>
+      <h3 style="margin:0 0 6px">${secLevelName(p)} · ${R.lessons.length} lessons this term</h3>
       <p class="muted" style="margin:0">${R.st.length} stations: ${R.st.map(a => SEC_APP[a].name).join(', ')}. Groups of about ${R.group} pupils, ${R.rot} minutes at each station.</p>
       ${R.notes.length ? `<ul style="margin:10px 0 0;padding-left:20px;line-height:1.5">${R.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
     </div>${R.lessons.map(l => secLessonHTML(R, p, l)).join('')}`;
@@ -3727,10 +3743,10 @@ function secForm(p){
   const num = (k, label, note) => `<div class="field"><label for="sec_${k}">${label}</label><input class="input" id="sec_${k}" data-k="${k}" type="number" min="0" value="${esc(p[k])}">${note ? `<p class="note" style="margin:4px 0 0">${note}</p>` : ''}</div>`;
   return `<div class="grid2">
     <div class="card" style="margin:0">
-      <h3 style="margin:0 0 10px">1. The block</h3>
-      ${sel('book', 'Awards Book', Object.entries(SEC_BOOKS).map(([k, b]) => [k, b.name + (b.soon ? ' (coming soon)' : '')]).filter(([k]) => !SEC_BOOKS[k].soon))}
-      ${sel('level', 'Level', [9,10,11,12].map(n => [n, 'Level ' + n]))}
-      ${num('lessons', 'Lessons in the block', 'Includes a Performance routine lesson and an assessment lesson at the end.')}
+      <h3 style="margin:0 0 10px">1. The term</h3>
+      ${sel('level', 'Level', [['all', 'All Levels (mixed class)'], ...SEC_LEVELS.map(n => [n, 'Level ' + n])])}
+      <div id="sec_bookwrap" ${p.level === 'all' ? 'hidden' : ''}>${sel('book', 'Awards Book', Object.entries(SEC_BOOKS).map(([k, b]) => [k, b.name + (b.soon ? ' (coming soon)' : '')]).filter(([k]) => !SEC_BOOKS[k].soon))}</div>
+      ${num('lessons', 'Lessons this term', 'Includes a Performance routine lesson and an assessment lesson at the end.')}
       ${num('mins', 'Lesson length (minutes)')}
       ${num('warm', 'Warm-up (minutes)')}
       ${num('cool', 'Cool-down (minutes)')}
@@ -3738,7 +3754,7 @@ function secForm(p){
     </div>
     <div class="card" style="margin:0">
       <h3 style="margin:0 0 6px">2. Your school's equipment</h3>
-      <p class="note" style="margin:0 0 12px">Floor and physical prep run in every school. Tell us what else the school has and the plan adapts.</p>
+      <p class="note" style="margin:0 0 12px">Physical prep runs in every school. Tell us what equipment the school has and the plan adapts.</p>
       ${Object.entries(SEC_EQUIP).map(([k, e]) => sel(k, e.label, e.opts)).join('')}
     </div></div>`;
 }
@@ -3754,8 +3770,8 @@ function screenSecondary(){
   render(`<div class="card">
       <p class="eyebrow">NGL Schools Secondary · Lesson planner</p>
       <h2 style="margin:0 0 6px">Your secondary lesson plan</h2>
-      <p class="muted" style="margin:0">Choose the level and tell us what equipment the school has. The planner builds a block of lessons from the Awards Book skills, ending with the Performance routines and an assessment. Levels aren't tied to a school year, so run as many blocks as each class needs.</p>
-      <div class="btn-row" style="margin-top:14px"><button class="btn small" data-act="sec-save">Save my settings</button><button class="btn ghost small" data-act="sec-print">Print or save as PDF</button><button class="btn ghost small" data-act="sec-reset">Reset</button></div>
+      <p class="muted" style="margin:0">Choose All Levels for a mixed class, or one level, and tell us what equipment the school has. The planner builds the term's lessons from the Awards Book skills, ending with the Performance routines and an assessment. Levels aren't tied to a school year, so run as many terms as each class needs.</p>
+      <div class="btn-row" style="margin-top:14px"><button class="btn small" data-act="sec-print">Print lesson plan</button><button class="btn ghost small" data-act="sec-save">Save my settings</button><button class="btn ghost small" data-act="sec-reset">Reset</button></div>
       <p class="note" id="sec_msg" style="margin:8px 0 0;min-height:1em"></p>
     </div>
     <div id="sec_form">${secForm(p)}</div>
@@ -3767,14 +3783,15 @@ function secPrintHTML(p){
   const R = secCalc(p);
   const rows = R.lessons.map(l => {
     let d;
-    if(l.perf) d = ['floor','vault','beam'].filter(ap => ap === 'floor' || p[ap] !== 'none').map(ap => `<b>${SEC_APP[ap].name}:</b> ${esc(R.book.routines[ap])}`).join('<br>');
-    else if(l.assess) d = `Assess and sign off the Level ${p.level} skills in each pupil's Awards Book. Every skill shown = level passed and certificate awarded.`;
+    if(l.perf) d = secRoutineAps(p).map(ap => `<b>${SEC_APP[ap].name}:</b> ${esc(R.book.routines[ap])}`).join('<br>');
+    else if(l.assess) d = `Assess and sign off ${R.all ? 'the skills for each pupil’s own level' : `the Level ${p.level} skills`} in each pupil's Awards Book. Every skill shown = level passed and certificate awarded.`;
+    else if(R.all) d = `<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="background:#e8e9f3;color:#1c1f3a;padding:4px 6px;text-align:left;width:14%"></th>${SEC_LEVELS.map(lv => `<th style="background:${SEC_LVL_COL[lv]};color:#fff;padding:4px 6px;text-align:left">Level ${lv}</th>`).join('')}</tr></thead><tbody>${l.st.map(s => `<tr><td style="padding:5px 6px;border-bottom:1px solid #e3e4ee;font-weight:800;color:${SEC_APP[s.ap].col}">${SEC_APP[s.ap].name}</td>${s.levels.map(x => `<td style="padding:5px 6px;border-bottom:1px solid #e3e4ee;vertical-align:top">${esc(x.focus.join('; '))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
     else d = l.st.map(s => `<b>${SEC_APP[s.ap].name}:</b> ${esc(s.focus.join('; '))}${s.recap.length ? ` <span class="inv-sub">(recap: ${esc(s.recap.join('; '))})</span>` : ''}`).join('<br>');
-    return `<tr><td style="white-space:nowrap"><b>Lesson ${l.n}</b><div class="inv-sub">${esc(l.title)}</div></td><td>${d}</td></tr>`;
+    return `<tr style="break-inside:avoid"><td style="white-space:nowrap;vertical-align:top"><b>Lesson ${l.n}</b><div class="inv-sub">${esc(l.title)}</div></td><td>${d}</td></tr>`;
   }).join('');
-  return `<div class="inv"><div class="inv-top"><div><div class="inv-h" style="font-size:22px">NGL SCHOOLS SECONDARY · LEVEL ${p.level}</div>
-      <div class="inv-sub">${esc(R.book.name)} · ${esc(S.club.name || '')} · ${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div></div></div>
-    <p class="inv-sub">${p.mins}-minute lessons: warm-up ${p.warm} min, ${R.st.length} stations × ${R.rot} min (${R.st.map(a => SEC_APP[a].name).join(', ')}), cool-down ${p.cool} min. Groups of about ${R.group}.</p>
+  return `<div class="inv"><div class="inv-top"><div><div class="inv-h" style="font-size:22px">NGL SCHOOLS SECONDARY · ${secLevelName(p).toUpperCase()} · TERM PLAN</div>
+      <div class="inv-sub">${R.all ? 'Levels 9 to 12 · ' : ''}${esc(R.book.name)} · ${esc(S.club.name || '')} · ${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div></div></div>
+    <p class="inv-sub">${R.lessons.length} lessons. ${p.mins}-minute lessons: warm-up ${p.warm} min, ${R.st.length} stations × ${R.rot} min (${R.st.map(a => SEC_APP[a].name).join(', ')}), cool-down ${p.cool} min. Groups of about ${R.group}.</p>
     ${R.notes.length ? `<p class="inv-sub">${R.notes.map(esc).join('<br>')}</p>` : ''}
     <table class="inv-table"><tbody>${rows}</tbody></table>
     <div class="inv-foot">National Gymnastics League · NGL Schools Secondary · For licensed NGL clubs and their schools</div></div>`;
