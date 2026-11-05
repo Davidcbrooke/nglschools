@@ -3662,7 +3662,7 @@ const SEC_ADAPT = {
   'beam:line':'Beam skills along a taped line or floor beam. Mark the skill as adapted in the Awards Book.',
   'bars:wall':'Wall bars: hangs, swings, chin-ups and leg lifts. Replace cast and circle skills with front support holds on a bench, and mark them as adapted.'
 };
-const SEC_DEFAULTS = {book:'teal', level:'all', floor:'mats', lessons:6, mins:50, warm:8, cool:5, classSize:30, vault:'box', beam:'bench', bars:'none', rebound:'none'};
+const SEC_DEFAULTS = {termStart:'', book:'teal', level:'all', floor:'mats', lessons:6, mins:50, warm:8, cool:5, classSize:30, vault:'box', beam:'bench', bars:'none', rebound:'none'};
 let SEC = null;
 function secStart(){ return {...SEC_DEFAULTS, ...((S.club && S.club.secPlan) || {}), ...(SEC || {})}; }
 function secStations(p){
@@ -3698,6 +3698,26 @@ function secCalc(p){
 const secLvlTag = lv => `<span style="display:inline-block;min-width:30px;text-align:center;padding:1px 6px;border-radius:6px;background:${SEC_LVL_COL[lv]};color:#fff;font-size:11px;font-weight:800;margin-right:6px">L${lv}</span>`;
 const secRoutineAps = p => ['floor','vault','beam'].filter(ap => p[ap] !== 'none');
 const secLevelName = p => p.level === 'all' ? 'All Levels' : 'Level ' + p.level;
+/* Today's lesson: one lesson a week from the term start date (week 1 = lesson 1). */
+function secToday(p, now = new Date()){
+  if(!p.termStart) return {key:'nodate'};
+  const start = new Date(p.termStart + 'T00:00:00'); if(isNaN(start)) return {key:'nodate'};
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((today - start) / 86400000);
+  const total = secCalc(p).lessons.length;
+  if(days < 0) return {key:'before', start, total};
+  const n = Math.floor(days / 7) + 1;
+  return n > total ? {key:'after', start, total} : {key:'on', n, total, start};
+}
+const secFmtDay = d => d.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long'});
+function secTodayHTML(p){
+  const t = secToday(p);
+  const sub = t.key === 'on' ? `Lesson ${t.n} of ${t.total} · ${secFmtDay(new Date())}`
+    : t.key === 'before' ? `The term starts on ${secFmtDay(t.start)}. Lesson 1 prints from then.`
+    : t.key === 'after' ? `All ${t.total} lessons this term are done. Set the next term’s start date to carry on.`
+    : 'Add the term start date below and this prints the right lesson each week.';
+  return `<button class="btn" data-act="sec-today" ${t.key === 'on' ? '' : 'disabled'} style="font-size:20px;padding:18px 26px;border-radius:16px;display:inline-flex;flex-direction:column;align-items:flex-start;gap:4px;line-height:1.1">🖨 Print today’s class plan<span style="font-size:13px;font-weight:600;opacity:.85">${esc(sub)}</span></button>`;
+}
 function secLessonHTML(R, p, l){
   const ch = ap => `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${SEC_APP[ap].col};color:#fff;font-size:12px;font-weight:800">${SEC_APP[ap].name}</span>`;
   const time = `Warm-up ${p.warm} min · ${R.st.length} stations × ${R.rot} min · cool-down ${p.cool} min`;
@@ -3722,6 +3742,7 @@ function secLessonHTML(R, p, l){
 function secOut(){
   const p = secRead(); SEC = p;
   const bw = document.getElementById('sec_bookwrap'); if(bw) bw.hidden = p.level === 'all';
+  const td = document.getElementById('sec_today'); if(td) td.innerHTML = secTodayHTML(p);
   const out = document.getElementById('sec_out'); if(!out) return;
   const R = secCalc(p);
   out.innerHTML = `<div class="card" style="margin:0 0 12px">
@@ -3734,7 +3755,7 @@ function secRead(){
   const p = {...SEC_DEFAULTS};
   document.querySelectorAll('#sec_form [data-k]').forEach(el => {
     const k = el.dataset.k;
-    p[k] = el.tagName === 'SELECT' && isNaN(el.value) ? el.value : (el.tagName === 'SELECT' ? +el.value : Math.max(0, parseFloat(el.value) || 0));
+    p[k] = el.type === 'date' ? el.value : el.tagName === 'SELECT' && isNaN(el.value) ? el.value : (el.tagName === 'SELECT' ? +el.value : Math.max(0, parseFloat(el.value) || 0));
   });
   return p;
 }
@@ -3744,6 +3765,7 @@ function secForm(p){
   return `<div class="grid2">
     <div class="card" style="margin:0">
       <h3 style="margin:0 0 10px">1. The term</h3>
+      <div class="field"><label for="sec_termStart">Term start date (the first lesson)</label><input class="input" id="sec_termStart" data-k="termStart" type="date" value="${esc(p.termStart || '')}"><p class="note" style="margin:4px 0 0">One lesson a week from this date. If you miss a week (half-term, a trip), move the date on a week.</p></div>
       ${sel('level', 'Level', [['all', 'All Levels (mixed class)'], ...SEC_LEVELS.map(n => [n, 'Level ' + n])])}
       <div id="sec_bookwrap" ${p.level === 'all' ? 'hidden' : ''}>${sel('book', 'Awards Book', Object.entries(SEC_BOOKS).map(([k, b]) => [k, b.name + (b.soon ? ' (coming soon)' : '')]).filter(([k]) => !SEC_BOOKS[k].soon))}</div>
       ${num('lessons', 'Lessons this term', 'Includes a Performance routine lesson and an assessment lesson at the end.')}
@@ -3771,7 +3793,8 @@ function screenSecondary(){
       <p class="eyebrow">NGL Schools Secondary · Lesson planner</p>
       <h2 style="margin:0 0 6px">Your secondary lesson plan</h2>
       <p class="muted" style="margin:0">Choose All Levels for a mixed class, or one level, and tell us what equipment the school has. The planner builds the term's lessons from the Awards Book skills, ending with the Performance routines and an assessment. Levels aren't tied to a school year, so run as many terms as each class needs.</p>
-      <div class="btn-row" style="margin-top:14px"><button class="btn small" data-act="sec-print">Print lesson plan</button><button class="btn ghost small" data-act="sec-save">Save my settings</button><button class="btn ghost small" data-act="sec-reset">Reset</button></div>
+      <div id="sec_today" style="margin-top:16px">${secTodayHTML(p)}</div>
+      <div class="btn-row" style="margin-top:14px"><button class="btn small" data-act="sec-print">Print the term’s lesson plans</button><button class="btn ghost small" data-act="sec-save">Save my settings</button><button class="btn ghost small" data-act="sec-reset">Reset</button></div>
       <p class="note" id="sec_msg" style="margin:8px 0 0;min-height:1em"></p>
     </div>
     <div id="sec_form">${secForm(p)}</div>
@@ -3779,9 +3802,18 @@ function screenSecondary(){
   document.querySelectorAll('#sec_form [data-k]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', secOut));
   secOut();
 }
-function secPrintHTML(p){
+// wait for the logos to load so they appear on the printout
+function secPrintWhenReady(){
+  const imgs = [...document.querySelectorAll('#print-area img')].filter(i => !i.complete);
+  if(!imgs.length) return window.print();
+  let done = false; const go = () => { if(!done){ done = true; window.print(); } };
+  Promise.all(imgs.map(i => new Promise(r => { i.onload = i.onerror = r; }))).then(go);
+  setTimeout(go, 3000);
+}
+function secPrintHTML(p, only){
   const R = secCalc(p);
-  const rows = R.lessons.map(l => {
+  const one = only ? R.lessons.find(l => l.n === only) : null;
+  const rows = (one ? [one] : R.lessons).map(l => {
     let d;
     if(l.perf) d = secRoutineAps(p).map(ap => `<b>${SEC_APP[ap].name}:</b> ${esc(R.book.routines[ap])}`).join('<br>');
     else if(l.assess) d = `Assess and sign off ${R.all ? 'the skills for each pupil’s own level' : `the Level ${p.level} skills`} in each pupil's Awards Book. Every skill shown = level passed and certificate awarded.`;
@@ -3789,6 +3821,21 @@ function secPrintHTML(p){
     else d = l.st.map(s => `<b>${SEC_APP[s.ap].name}:</b> ${esc(s.focus.join('; '))}${s.recap.length ? ` <span class="inv-sub">(recap: ${esc(s.recap.join('; '))})</span>` : ''}`).join('<br>');
     return `<tr style="break-inside:avoid"><td style="white-space:nowrap;vertical-align:top"><b>Lesson ${l.n}</b><div class="inv-sub">${esc(l.title)}</div></td><td>${d}</td></tr>`;
   }).join('');
+  // Today's class plan: a running order with timings and where each group starts
+  let order = '';
+  if(one && !one.perf && !one.assess){
+    const n = R.st.length; let t = p.warm;
+    const cell = 'padding:6px 8px;border-bottom:1px solid #e3e4ee;vertical-align:top';
+    const rowsO = [`<tr><td style="${cell};white-space:nowrap"><b>0–${p.warm} min</b></td><td style="${cell}" colspan="${n}"><b>Warm-up</b> together</td></tr>`];
+    for(let r = 0; r < n; r++){
+      rowsO.push(`<tr><td style="${cell};white-space:nowrap"><b>${t}–${t + R.rot} min</b><div class="inv-sub">Rotation ${r + 1}</div></td>${R.st.map((_, gi) => { const ap = R.st[(gi + r) % n]; return `<td style="${cell}"><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${SEC_APP[ap].col};color:#fff;font-size:11px;font-weight:800">${SEC_APP[ap].name}</span></td>`; }).join('')}</tr>`);
+      t += R.rot;
+    }
+    rowsO.push(`<tr><td style="${cell};white-space:nowrap"><b>${t}–${t + p.cool} min</b></td><td style="${cell}" colspan="${n}"><b>Cool-down</b> and stretch</td></tr>`);
+    order = `<h3 style="font:800 15px 'Roboto Condensed',Roboto,Arial;text-transform:uppercase;color:#28225c;margin:14px 0 6px">Running order</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px"><thead><tr><th style="background:#28225c;color:#fff;padding:6px 8px;text-align:left;width:15%">Time</th>${R.st.map((_, gi) => `<th style="background:#28225c;color:#fff;padding:6px 8px;text-align:left">Group ${gi + 1}</th>`).join('')}</tr></thead><tbody>${rowsO.join('')}</tbody></table>
+      <h3 style="font:800 15px 'Roboto Condensed',Roboto,Arial;text-transform:uppercase;color:#28225c;margin:0 0 6px">Skills at each station</h3>`;
+  }
   const bar = ['#E8559A','#F8D438','#E88230','#0071B3','#01AFB8','#3BAA4A','#7A4C9E'].map(c => `<i style="flex:1;background:${c}"></i>`).join('');
   const date = new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'});
   return `<style>@page{size:A4;margin:0}
@@ -3811,16 +3858,16 @@ function secPrintHTML(p){
   <div class="sp">
     <div class="sp-top"><div class="sp-bar">${bar}</div>
       <div class="sp-head"><div class="sp-logo"><img src="../icons/ngl-logo-full.png" alt="NGL"><span class="sp-pill">NGL SCHOOLS</span></div>
-        <div><div class="sp-k">Secondary · Term lesson plan</div><div class="sp-h">${esc(secLevelName(p))}</div>
+        <div><div class="sp-k">${one ? `Secondary · Today’s class plan · Lesson ${one.n} of ${R.lessons.length}` : 'Secondary · Term lesson plan'}</div><div class="sp-h">${esc(secLevelName(p))}${one ? ' · ' + esc(one.title) : ''}</div>
         <div class="sp-s">${R.all ? 'Levels 9 to 12 · ' : ''}${esc(R.book.name)} · ${esc(S.club.name || '')} · ${date}</div></div></div></div>
-    <div class="sp-foot"><div class="sp-fl"><b>NGL Schools</b> · Secondary term plan · Exclusively for British Gymnastics Clubs</div>
+    <div class="sp-foot"><div class="sp-fl"><b>NGL Schools</b> · ${one ? 'Today’s class plan' : 'Secondary term plan'} · Exclusively for British Gymnastics Clubs</div>
       <div class="sp-fr"><span class="sp-os">OFFICIAL SPONSOR</span><span class="sp-jg"><img src="../icons/justgo-logo-white.png" alt="JustGo"></span></div></div>
     <table class="sp-wrap"><thead><tr><td><div style="height:118px"></div></td></tr></thead>
       <tfoot><tr><td><div style="height:58px"></div></td></tr></tfoot>
       <tbody><tr><td>
         <p class="inv-sub" style="margin:0 0 6px">${R.lessons.length} lessons. ${p.mins}-minute lessons: warm-up ${p.warm} min, ${R.st.length} stations × ${R.rot} min (${R.st.map(a => SEC_APP[a].name).join(', ')}), cool-down ${p.cool} min. Groups of about ${R.group}.</p>
         ${R.notes.length ? `<p class="inv-sub" style="margin:0 0 12px">${R.notes.map(esc).join('<br>')}</p>` : ''}
-        <table class="inv-table"><tbody>${rows}</tbody></table>
+        ${order}<table class="inv-table"${one ? ' style="font-size:14px"' : ''}><tbody>${rows}</tbody></table>
       </td></tr></tbody></table>
   </div>`;
 }
@@ -3836,9 +3883,13 @@ document.addEventListener('click', async e => {
     document.getElementById('sec_form').innerHTML = secForm(SEC);
     document.querySelectorAll('#sec_form [data-k]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', secOut));
     secOut(); if(msg){ msg.style.color = ''; msg.textContent = 'Reset. Press Save to keep these settings.'; }
+  }else if(a === 'sec-today'){
+    const p = secRead(), td = secToday(p); if(td.key !== 'on') return;
+    document.getElementById('print-area').innerHTML = secPrintHTML(p, td.n);
+    secPrintWhenReady();
   }else if(a === 'sec-print'){
     document.getElementById('print-area').innerHTML = secPrintHTML(secRead());
-    window.print();
+    secPrintWhenReady();
   }
 });
 
