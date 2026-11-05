@@ -3789,12 +3789,40 @@ function secPrintHTML(p){
     else d = l.st.map(s => `<b>${SEC_APP[s.ap].name}:</b> ${esc(s.focus.join('; '))}${s.recap.length ? ` <span class="inv-sub">(recap: ${esc(s.recap.join('; '))})</span>` : ''}`).join('<br>');
     return `<tr style="break-inside:avoid"><td style="white-space:nowrap;vertical-align:top"><b>Lesson ${l.n}</b><div class="inv-sub">${esc(l.title)}</div></td><td>${d}</td></tr>`;
   }).join('');
-  return `<div class="inv"><div class="inv-top"><div><div class="inv-h" style="font-size:22px">NGL SCHOOLS SECONDARY · ${secLevelName(p).toUpperCase()} · TERM PLAN</div>
-      <div class="inv-sub">${R.all ? 'Levels 9 to 12 · ' : ''}${esc(R.book.name)} · ${esc(S.club.name || '')} · ${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div></div></div>
-    <p class="inv-sub">${R.lessons.length} lessons. ${p.mins}-minute lessons: warm-up ${p.warm} min, ${R.st.length} stations × ${R.rot} min (${R.st.map(a => SEC_APP[a].name).join(', ')}), cool-down ${p.cool} min. Groups of about ${R.group}.</p>
-    ${R.notes.length ? `<p class="inv-sub">${R.notes.map(esc).join('<br>')}</p>` : ''}
-    <table class="inv-table"><tbody>${rows}</tbody></table>
-    <div class="inv-foot">National Gymnastics League · NGL Schools Secondary · For licensed NGL clubs and their schools</div></div>`;
+  const bar = ['#E8559A','#F8D438','#E88230','#0071B3','#01AFB8','#3BAA4A','#7A4C9E'].map(c => `<i style="flex:1;background:${c}"></i>`).join('');
+  const date = new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'});
+  return `<style>@page{size:A4;margin:0}
+    .sp{font-family:Roboto,Arial,sans-serif;color:#1c1f3a;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .sp-top{position:fixed;top:0;left:0;right:0;z-index:2}
+    .sp-bar{display:flex;height:9px}
+    .sp-head{background:#28225c;height:92px;display:flex;align-items:center;gap:22px;padding:0 30px}
+    .sp-logo{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.sp-logo img{height:42px;display:block}
+    .sp-pill{background:#fbd43a;color:#28225c;font:700 8.5px Roboto,Arial;letter-spacing:2.2px;padding:3px 9px;border-radius:3px}
+    .sp-k{font:700 9.5px Roboto,Arial;letter-spacing:3px;color:#fbd43a;text-transform:uppercase}
+    .sp-h{font:800 30px/1.05 'Roboto Condensed',Roboto,Arial;color:#fff;text-transform:uppercase;margin:3px 0}
+    .sp-s{font:400 10.5px Roboto,Arial;color:#c9cbee}
+    .sp-foot{position:fixed;left:0;right:0;bottom:0;height:40px;background:#fbd43a;border-top-left-radius:40px 26px;display:flex;align-items:center;justify-content:space-between;padding:0 30px 0 42px;z-index:2}
+    .sp-fl{font:400 9px Roboto,Arial;color:#28225c}.sp-fr{display:flex;align-items:center;gap:10px}
+    .sp-os{font:700 7.5px Roboto,Arial;letter-spacing:2.4px;color:#28225c}
+    .sp-jg{background:#28225c;border-radius:999px;padding:4px 12px;display:inline-flex}.sp-jg img{height:13px;display:block}
+    .sp-wrap{width:100%;border-collapse:collapse}.sp-wrap>thead td,.sp-wrap>tfoot td,.sp-wrap>tbody>tr>td{padding:0 30px}
+    .sp .inv-table td{font-size:12px}
+  </style>
+  <div class="sp">
+    <div class="sp-top"><div class="sp-bar">${bar}</div>
+      <div class="sp-head"><div class="sp-logo"><img src="../icons/ngl-logo-full.png" alt="NGL"><span class="sp-pill">NGL SCHOOLS</span></div>
+        <div><div class="sp-k">Secondary · Term lesson plan</div><div class="sp-h">${esc(secLevelName(p))}</div>
+        <div class="sp-s">${R.all ? 'Levels 9 to 12 · ' : ''}${esc(R.book.name)} · ${esc(S.club.name || '')} · ${date}</div></div></div></div>
+    <div class="sp-foot"><div class="sp-fl"><b>NGL Schools</b> · Secondary term plan · Exclusively for British Gymnastics Clubs</div>
+      <div class="sp-fr"><span class="sp-os">OFFICIAL SPONSOR</span><span class="sp-jg"><img src="../icons/justgo-logo-white.png" alt="JustGo"></span></div></div>
+    <table class="sp-wrap"><thead><tr><td><div style="height:118px"></div></td></tr></thead>
+      <tfoot><tr><td><div style="height:58px"></div></td></tr></tfoot>
+      <tbody><tr><td>
+        <p class="inv-sub" style="margin:0 0 6px">${R.lessons.length} lessons. ${p.mins}-minute lessons: warm-up ${p.warm} min, ${R.st.length} stations × ${R.rot} min (${R.st.map(a => SEC_APP[a].name).join(', ')}), cool-down ${p.cool} min. Groups of about ${R.group}.</p>
+        ${R.notes.length ? `<p class="inv-sub" style="margin:0 0 12px">${R.notes.map(esc).join('<br>')}</p>` : ''}
+        <table class="inv-table"><tbody>${rows}</tbody></table>
+      </td></tr></tbody></table>
+  </div>`;
 }
 document.addEventListener('click', async e => {
   const t = e.target.closest('[data-act^="sec-"]'); if(!t) return;
