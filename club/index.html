@@ -2680,7 +2680,12 @@ function multiPathwayDiscount(club, price){
 const isOldLicence = o => (o.type || 'licence') === 'licence';
 function orderLines(o){
   if(o.lines && o.lines.length) return o.lines;
-  if(o.type === 'graduation') return [{kind:'graduation', desc:`NGL Graduation medal & place: ${o.eventTitle || 'NGL Schools Graduation'}`, sub:o.schoolName || '', qty:o.qty, unit:o.price}];
+  if(o.type === 'graduation'){
+    const L = [{kind:'graduation', desc:`NGL Graduation medal & place: ${o.eventTitle || 'NGL Schools Graduation'}`, sub:o.schoolName || '', qty:o.qty, unit:o.price}];
+    if(o.spectators) L.push({kind:'spectator', desc:'NGL Graduation extra spectator tickets', sub:o.schoolName || '', qty:o.spectators, unit:o.spectatorPrice || GRAD_NGL_SPECTATOR});
+    if(o.vat){ const net = L.reduce((a, l) => a + l.qty * l.unit, 0); L.push({kind:'vat', desc:`VAT at ${Math.round(VAT_RATE * 100)}%`, qty:1, unit:Math.round(net * VAT_RATE * 100) / 100}); }
+    return L;
+  }
   return [{kind:'legacy', desc:`NGL Schools gymnast licence, ${o.season || ''} school year (per gymnast)`, sub:o.schoolName || '', qty:o.qty, unit:o.price}];
 }
 const orderTotal = o => orderLines(o).reduce((a, l) => a + l.qty * l.unit, 0);
@@ -2851,11 +2856,11 @@ const liveApi = {
     await fs.setDoc(fs.doc(D, 'orders', id), {...data, createdAt:fs.serverTimestamp()});
     const local = {id, ...data, createdAt:new Date()}; S.orders.push(local); return local;
   },
-  async orderGraduation(ev, qty){
+  async orderGraduation(ev, qty, spectators = 0){
     const {fs, D} = await fb();
     const id = orderRef();
     const o = {type:'graduation', clubId:S.uid, clubName:S.club.name, eventId:ev.id, eventTitle:ev.title || 'NGL Schools Graduation', eventDate:ev.date || '',
-               schoolId:ev.schoolId || '', schoolName:'Graduation ' + evDateShort(ev), qty, price:GRAD_NGL_FEE, season:S.season, status:'awaiting-payment'};
+               schoolId:ev.schoolId || '', schoolName:'Graduation ' + evDateShort(ev), qty, price:GRAD_NGL_FEE, spectators, spectatorPrice:GRAD_NGL_SPECTATOR, vat:!!VAT_RATE, season:S.season, status:'awaiting-payment'};
     await fs.setDoc(fs.doc(D, 'orders', id), {...o, createdAt:fs.serverTimestamp()});
     const local = {id, ...o, createdAt:new Date()}; S.orders.push(local); return local;
   },
@@ -2956,9 +2961,9 @@ const demoApi = {
   async addSchool(name, children){ const s = {id:'s' + (S.schools.length + 1), name, children}; S.schools.push(s); S.club.schoolsChildren = childrenTotal(); return s; },
   async updateSchool(id, d){ Object.assign(S.schools.find(s => s.id === id), d); S.club.schoolsChildren = childrenTotal(); },
   async placeOrder(o){ const local = {id:orderRef(), ...o, clubId:'demo', clubName:S.club.name, season:S.season, status:'awaiting-payment', createdAt:new Date()}; S.orders.push(local); return local; },
-  async orderGraduation(ev, qty){
+  async orderGraduation(ev, qty, spectators = 0){
     const o = {id:orderRef(), type:'graduation', clubId:'demo', clubName:S.club.name, eventId:ev.id, eventTitle:ev.title || 'NGL Schools Graduation', eventDate:ev.date || '',
-               schoolId:ev.schoolId || '', schoolName:'Graduation ' + evDateShort(ev), qty, price:GRAD_NGL_FEE, status:'awaiting-payment', season:S.season, createdAt:new Date()};
+               schoolId:ev.schoolId || '', schoolName:'Graduation ' + evDateShort(ev), qty, price:GRAD_NGL_FEE, spectators, spectatorPrice:GRAD_NGL_SPECTATOR, vat:!!VAT_RATE, status:'awaiting-payment', season:S.season, createdAt:new Date()};
     S.orders.push(o); return o;
   },
   async newCode(){ S.club.accessCode = newAccessCode(S.club.name); return S.club.accessCode; },
@@ -2989,7 +2994,7 @@ function setTop(){
   if(signedIn){
     ta.innerHTML = `${S.club ? `<span class="pill">${esc(S.club.name)}</span>` : ''}<button class="btn ghost small" data-act="signout">Sign out</button>`;
     nav.hidden = false;
-    const tabs = (S.club && !ADMIN_MODE) ? [['dashboard','Dashboard'],['orders','Orders'],['planner','Profit planner'],['programme','Programme & pricing']] : [];
+    const tabs = (S.club && !ADMIN_MODE) ? [['dashboard','Dashboard'],['orders','Orders'],['planner','Profit planner'],['secondary','Secondary planner'],['programme','Programme & pricing']] : [];
     nav.innerHTML = tabs
       .map(([k,l]) => `<button class="navtab ${tab===k?'active':''}" data-tab="${k}">${l}</button>`).join('');
   }else{
@@ -3030,7 +3035,7 @@ function pitchHTML(signedInView){
       <video src="/docs/ngl-schools-why-now.mp4" poster="/docs/ngl-schools-why-now-poster.jpg" controls playsinline preload="metadata"></video>
       <div class="card" style="margin:0">
         <h3>NGL Schools Prospectus</h3>
-        <p class="muted" style="margin:0">An 8-page prospectus ready to share with your local schools: why gymnastics, the funding change, two ways to run it and everything that's included.</p>
+        <p class="muted" style="margin:0">A 9-page prospectus ready to share with your local schools: why gymnastics, the funding change, two ways to run it, how it continues into secondary school and everything that's included.</p>
         <a class="snip" href="${SCHOOLS_PITCH_PDF}" target="_blank" rel="noopener" aria-label="Open the NGL Schools Prospectus PDF">
           <img src="/docs/prospectus-page4.jpg" alt="Page from the NGL Schools Prospectus: school sport funding is changing" loading="lazy">
           <span class="more">Read the full prospectus</span>
@@ -3125,9 +3130,9 @@ function pitchHTML(signedInView){
         <tr><td>Gymnast, including one spectator</td><td class="num">£${GRAD_FAMILY_PRICE}</td></tr>
         <tr><td>Each extra spectator</td><td class="num">£${GRAD_EXTRA_SPECTATOR}</td></tr>
         <tr><td>Exclusive NGL Graduation Medal</td><td class="num">Included</td></tr>
-        ${signedInView ? `<tr><td>NGL charge to your club, per graduate (medal included)</td><td class="num">£${GRAD_NGL_FEE}</td></tr>
-        <tr><td><b>Your club keeps, per graduate</b></td><td class="num"><b>£${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}</b></td></tr>
-        <tr><td><b>Your club keeps, per extra spectator</b></td><td class="num"><b>£${GRAD_EXTRA_SPECTATOR}</b></td></tr>` : ''}
+        ${signedInView ? `<tr><td>NGL charge to your club, per graduate (medal included)</td><td class="num">£${GRAD_NGL_FEE} + VAT</td></tr>
+        <tr><td>NGL charge per extra spectator</td><td class="num">£${GRAD_NGL_SPECTATOR} + VAT</td></tr>
+        <tr><td><b>Your club keeps, per graduate</b></td><td class="num"><b>£${GRAD_CLUB_KEEPS}</b></td></tr>` : ''}
       </tbody></table>
     </div>
   </div>
@@ -3272,12 +3277,12 @@ function editClubModal(club, isAdminEdit){
   });
 }
 /* NGL Schools Prospectus: a ready-made PDF clubs give to headteachers and PE leads (no NGL prices, so each club sets its own). */
-const SCHOOLS_PITCH_PDF = '/docs/NGL_Schools_Prospectus.pdf?v=20261104';
+const SCHOOLS_PITCH_PDF = '/docs/NGL_Schools_Prospectus.pdf?v=20261105';
 function schoolsPitchCardHTML(){
   return `<div class="card">
     <p class="eyebrow">For your schools</p>
     <h2 style="margin:0 0 6px">NGL Schools Prospectus for headteachers</h2>
-    <p class="muted" style="margin:0 0 14px">An 8-page prospectus to send or print for the schools you work with: why gymnastics, the NGL pathway, the changes to PE funding, and the two ways to run NGL Schools. It has no prices, so you can quote your own.</p>
+    <p class="muted" style="margin:0 0 14px">A 9-page prospectus to send or print for the schools you work with: why gymnastics, the NGL pathway, the changes to PE funding, the two ways to run NGL Schools, and how it continues into secondary school. It has no prices, so you can quote your own.</p>
     <div class="btn-row"><a class="btn small" href="${SCHOOLS_PITCH_PDF}" target="_blank" rel="noopener">Open the Prospectus (PDF)</a><a class="btn ghost small" href="${SCHOOLS_PITCH_PDF}" download>Download</a><button class="btn ghost small" data-tab="planner">Work out your prices in the Profit planner</button></div>
   </div>`;
 }
@@ -3314,7 +3319,7 @@ function screenProgramme(){ render(pitchHTML(true)); }
    ===================================================================== */
 const PLAN_DEFAULTS = {
   bandChildren: 100, vatRegistered: false,
-  o1On: true, o1Schools: 2, o1Children: 100, o1Fee: 950, o1BookPrice: 8, o1Visits: 10, o1VisitHrs: 2, o1TrainHrs: 3,
+  o1On: true, o1Schools: 2, o1Children: 100, o1FeeA: 600, o1FeeB: 800, o1FeeC: 950, o1FeeD: 1200, o1FeeE: 1500, o1BookPrice: 8, o1Visits: 10, o1VisitHrs: 2, o1TrainHrs: 3,
   o2On: true, o2Children: 30, o2Fee: 6, o2Weeks: 33, o2Group: 15, o2SessHrs: 1.5, o2Overheads: 10, o2Hall: 0, o2BookPrice: 10,
   coachRate: 25, gradRate: 60, extraSpect: 1, newRate: 33, certsPerChild: 3
 };
@@ -3327,6 +3332,9 @@ function planStart(){
   }
   return p;
 }
+/* Suggested yearly fee to a school, on a sliding scale by the children taking part at that school. */
+const SCHOOL_FEE_TIERS = [['o1FeeA', 30, 'Up to 30'], ['o1FeeB', 60, '31–60'], ['o1FeeC', 100, '61–100'], ['o1FeeD', 200, '101–200'], ['o1FeeE', null, '201+']];
+const schoolFeeFor = (p, n) => { const t = SCHOOL_FEE_TIERS.find(x => x[1] == null || n <= x[1]); return {fee: p[t[0]], tier: t[2]}; };
 function planCalc(p){
   const r2 = x => Math.round(x * 100) / 100;
   const band = bandForCount(Math.max(1, p.bandChildren));
@@ -3334,7 +3342,9 @@ function planCalc(p){
   const licNet = band.price - disc;
   const licVat = p.vatRegistered ? 0 : r2(licNet * VAT_RATE);
   const book = shopItem('book').price, cert = shopItem('cert').price;
-  const gradKeep = GRAD_FAMILY_PRICE - GRAD_NGL_FEE;
+  // Each £12 ticket: a VAT-registered club keeps £5 after VAT and NGL's £5 + VAT; one that isn't keeps £6 (£12 less £6 to NGL).
+  // Extra spectator money (£6) passes straight to NGL, so it isn't club income.
+  const gradKeep = p.vatRegistered ? GRAD_CLUB_KEEPS : GRAD_FAMILY_PRICE - GRAD_NGL_FEE * (1 + VAT_RATE);
   const opt = (on, kind, newOnly) => {
     if(!on) return null;
     const n = kind === 1 ? p.o1Children : p.o2Children;
@@ -3342,14 +3352,14 @@ function planCalc(p){
     const grads = Math.round(n * p.gradRate / 100);
     const inc = [], cost = [];
     if(kind === 1){
-      inc.push(['School licence fees', `${p.o1Schools} school${p.o1Schools === 1 ? '' : 's'} × ${gbp(p.o1Fee)}`, p.o1Schools * p.o1Fee]);
+      const per = p.o1Schools ? Math.round(n / p.o1Schools) : 0, sf = schoolFeeFor(p, per);
+      inc.push(['School licence fees', `${p.o1Schools} school${p.o1Schools === 1 ? '' : 's'} × ${gbp(sf.fee)} (about ${per} children each: ${sf.tier})`, p.o1Schools * sf.fee]);
       inc.push(['Awards Books sold to schools', `${books} × ${gbp(p.o1BookPrice)}`, books * p.o1BookPrice]);
     }else{
       inc.push(['Weekly club fees', `${n} children × ${gbp(p.o2Fee)} × ${p.o2Weeks} weeks`, n * p.o2Fee * p.o2Weeks]);
       inc.push(['Awards Books sold to families', `${books} × ${gbp(p.o2BookPrice)}`, books * p.o2BookPrice]);
     }
-    inc.push(['Graduation (you keep ' + gbp(gradKeep) + ' a gymnast)', `${grads} graduates`, grads * gradKeep]);
-    inc.push(['Extra spectator tickets', `${grads} × ${p.extraSpect} × ${gbp(GRAD_EXTRA_SPECTATOR)}`, Math.round(grads * p.extraSpect) * GRAD_EXTRA_SPECTATOR]);
+    inc.push(['Graduation (you keep ' + gbp(gradKeep) + ' a gymnast)', `${grads} graduates; extra spectator money goes to NGL`, grads * gradKeep]);
     cost.push(['Awards Books from NGL', `${books} × ${gbp(book)}`, books * book]);
     cost.push(['Certificates from NGL', `${n * p.certsPerChild} × ${gbp(cert)}`, r2(n * p.certsPerChild * cert)]);
     const items = books + Math.ceil(n * p.certsPerChild / 10);
@@ -3400,15 +3410,17 @@ function planInputs(p){
       <h3 style="margin:18px 0 6px">2. Costs for both options</h3>
       ${intro('These apply to Option 1 and Option 2.')}
       ${num('coachRate', 'Coach pay per hour', 0.5, '£', 'What you pay a coach for an hour of their time, including travel if you pay it.')}
-      ${num('gradRate', 'Children who graduate each year (%)', 1, '', 'The share of children who complete a level and come to a Graduation. Families pay £12, including one spectator; you keep £7 and pay NGL £5, medal included.')}
-      ${num('extraSpect', 'Extra spectators per graduate', 0.5, '', 'Average extra family members at each Graduation, at £6 each. You keep all of it. We expect about 1.')}
+      ${num('gradRate', 'Children who graduate each year (%)', 1, '', 'The share of children who complete a level and come to a Graduation. Families pay £12, including one spectator. You keep £5 if VAT registered (£6 if not); NGL charges £5 + VAT, medal included. Extra spectators (£6) are passed to NGL.')}
       ${num('newRate', 'New children each year after year 1 (%)', 1, '', 'Each child keeps one Awards Book for their whole time at school, so after year 1 only new children need a book.')}
     </div>
     <div class="card" style="margin:0">
       ${chk('o1On', 'Option 1: Teacher-led', 'Your coaches train the school’s teachers, who then run NGL Schools in PE lessons. The school pays you.')}
       ${num('o1Schools', 'Number of schools', 1, '', 'Schools where teachers will deliver the programme.')}
       ${num('o1Children', 'Children in teacher-led classes', 1, '', 'All the children taking part in PE lessons across these schools.')}
-      ${num('o1Fee', 'Your yearly fee to each school', 10, '£', 'You set this. It’s what each school pays your club a year for training, monthly visits and support. NGL suggests from £950.')}
+      <div class="field"><label>Your yearly fee to each school, by children at that school</label>
+        <p class="note" style="margin:0 0 8px">You set these. It’s what each school pays your club a year for training, monthly visits and support. The planner uses the average children per school to pick the fee.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">${SCHOOL_FEE_TIERS.map(([k, , label]) => `<div><div class="note" style="margin:0 0 4px">${label}</div><div style="display:flex;align-items:center;gap:4px"><span class="muted">£</span><input class="input" id="pl_${k}" data-k="${k}" type="number" min="0" step="10" value="${esc(p[k])}"></div></div>`).join('')}</div>
+      </div>
       ${num('o1BookPrice', 'Your price for each Awards Book, to the school', 0.5, '£', 'You buy books from NGL at £5. You set the price you charge the school; we suggest £8.')}
       ${num('o1Visits', 'Coach visits to each school, per year', 1, '', 'How often a coach visits to support lessons and assess awards. Monthly is 10 visits.')}
       ${num('o1VisitHrs', 'Hours per visit', 0.5, '', 'Coach time for each visit, including travel time if you pay for it.')}
@@ -3464,7 +3476,7 @@ function planResults(p){
         <tr><td><b>Total costs</b></td>${col(-y1.C)}${col(-y2.C)}</tr>
         <tr><td><b style="font-size:17px">Profit</b></td><td class="num" style="font-size:17px">${sign(y1.P)}</td><td class="num" style="font-size:17px">${sign(y2.P)}</td></tr>
       </tbody></table></div>
-    <p class="note" style="margin:10px 0 0">NGL prices are live: books ${gbp(shopItem('book').price)}, certificates ${gbp(shopItem('cert').price)}, Graduation ${gbp(GRAD_NGL_FEE)} a graduate (families pay ${gbp(GRAD_FAMILY_PRICE)} including one spectator, extra spectators ${gbp(GRAD_EXTRA_SPECTATOR)}). Everything else is your own estimate. This is a planning guide, not financial advice.</p>`;
+    <p class="note" style="margin:10px 0 0">NGL prices are live: books ${gbp(shopItem('book').price)}, certificates ${gbp(shopItem('cert').price)}, Graduation ${gbp(GRAD_NGL_FEE)} + VAT a graduate (families pay ${gbp(GRAD_FAMILY_PRICE)} including one spectator; extra spectators ${gbp(GRAD_EXTRA_SPECTATOR)}, passed to NGL). Everything else is your own estimate. This is a planning guide, not financial advice.</p>`;
   return R;
 }
 function planRead(){
@@ -3499,7 +3511,7 @@ function planPrintHTML(p, R){
     ${block('Option 1: Teacher-led', R.y1.o1, R.y2.o1)}${block('Option 2: After-school club', R.y1.o2, R.y2.o2)}
     <tr><td>NGL Schools Club Licence, ${esc(R.band.short)}${R.licVat ? ' (incl. VAT)' : ''}</td><td class="num">${gbp(-R.y1.lic)}</td><td class="num">${gbp(-R.y2.lic)}</td></tr>
     <tr class="inv-total"><td>Profit</td><td class="num">${gbp(R.y1.P)}</td><td class="num">${gbp(R.y2.P)}</td></tr></tbody></table>
-    <p class="inv-sub">Assumptions: coach pay ${gbp(p.coachRate)}/hr; ${p.gradRate}% graduate with ${p.extraSpect} extra spectator${p.extraSpect === 1 ? '' : 's'} each; ${p.newRate}% new children in later years${p.o1On ? `; Option 1: ${gbp(p.o1Fee)} per school, ${p.o1Visits} visits of ${p.o1VisitHrs} hrs, ${p.o1TrainHrs} hrs training` : ''}${p.o2On ? `; Option 2: ${gbp(p.o2Fee)} a session, ${p.o2Weeks} weeks, ${p.o2Group} per coach, ${p.o2SessHrs} coach hrs a session, ${p.o2Overheads}% overheads${p.o2Hall ? ', hall ' + gbp(p.o2Hall) + ' a session' : ''}`: ''}. A planning guide, not financial advice.</p>
+    <p class="inv-sub">Assumptions: coach pay ${gbp(p.coachRate)}/hr; ${p.gradRate}% graduate; ${p.newRate}% new children in later years${p.o1On ? `; Option 1: school fees ${SCHOOL_FEE_TIERS.map(x => gbp(p[x[0]])).join(' / ')} by school size, ${p.o1Visits} visits of ${p.o1VisitHrs} hrs, ${p.o1TrainHrs} hrs training` : ''}${p.o2On ? `; Option 2: ${gbp(p.o2Fee)} a session, ${p.o2Weeks} weeks, ${p.o2Group} per coach, ${p.o2SessHrs} coach hrs a session, ${p.o2Overheads}% overheads${p.o2Hall ? ', hall ' + gbp(p.o2Hall) + ' a session' : ''}`: ''}. A planning guide, not financial advice.</p>
     <div class="inv-foot">National Gymnastics League · NGL Schools</div></div>`;
 }
 document.addEventListener('click', async e => {
@@ -3523,12 +3535,206 @@ document.addEventListener('click', async e => {
 });
 
 
+/* =====================================================================
+   SECONDARY LESSON PLANNER (NGL Schools Secondary) — licensed clubs only
+   ===================================================================== */
+const SEC_APP = {
+  vault:  {name:'Vault', col:'#28225c'},
+  bars:   {name:'Bars', col:'#e3474a'},
+  beam:   {name:'Beam', col:'#1960ab'},
+  floor:  {name:'Floor', col:'#00b5b8'},
+  prep:   {name:'Physical prep', col:'#62a83e'},
+  rebound:{name:'Rebound (tramp)', col:'#e8822f'}
+};
+const SEC_BOOKS = {
+  teal: {name:'Book 3 · Teal', levels:{
+    9:{vault:['Tuck handstand shoulder shrugs (5 reps) against wall','Straddle on, immediate stretch jump off (1m vault) using springboard','Leapfrog over mushroom or low box to stand','Handstand flat back onto 60cm mats using springboard'],
+       bars:['Forward roll to hang (no coach assist)','5 swings in mixed grip (both ways)','Cast towards horizontal with assistance','Chin-up held (3 seconds in overgrasp)'],
+       beam:['Walk backwards for 1 length (high beam)','3 caterpillar walks (high beam)','Stretch jump (high beam)','Cartwheel (red foam beam)'],
+       floor:['Backward roll to straddle or tuck stand','1-handed cartwheel','Run or hurdle jump into handstand flat back (30cm mats)','Scissor leap'],
+       prep:['Dish hold with straight legs, 5s','5 tucked leg lifts','Rebound/penguin jumps across floor','5 front support rocks'],
+       rebound:['Wolf jump','Run and front somersault to sitting on mats (60cm)','Handstand to bridge on floor','Two consecutive high straddle jumps']},
+    10:{vault:['Front support slide to back support with tucked knees','Handstand flat back onto 90cm mats using springboard','Squat through on 60cm trapezoid box using springboard','Handstand shrugs against wall x10'],
+       bars:['Arch/dish in hang x3 (fish swings)','Circle up with no coach assistance','Cast back hip circle with support','Cast and dismount above horizontal'],
+       beam:['Kick towards handstand (medium beam)','Tuck jump (medium beam)','Y balance 5s (medium beam)','Cat leap (high beam)'],
+       floor:['Handstand bridge with light support','Full spin','Handstand forward roll','Hurdle step into round-off rebound'],
+       prep:['5 dish rocks','Rock backwards, stand up, stretch jump x5','Bridge with legs together','Lie on belly, raise arms from floor 5s'],
+       rebound:['Sissone jump','Split jump, 1/2 turn jump','Front somersault with coach support','Handspring over barrel']},
+    11:{vault:['Handstand flat back showing second flight (60cm mats)','From 30cm block, step rebound on springboard, star jump to mat','12 consecutive tucked jumps on floor area','Front tucked somersault to land seated on 60cm mats using springboard'],
+       bars:['Cast back hip circle without support','3 aided chin-ups','Cast into straddle on, jump off with assistance','5 fish swings'],
+       beam:['Half spin (floor beam)','Tuck jump (high beam)','Squat on mount (high beam)','Walk backwards halfway, half turn, walk forwards to end (high beam)'],
+       floor:['Front-to-back cartwheel, backward roll to optional exit','Full jump turn','Straight legs lift to headstand 3s','Bridge kickover'],
+       prep:['5 single-leg glute bridges','Extended front support 3s (return to pike stand)','Dominant leg splits','5 sit-ups'],
+       rebound:['Change leg split jump','Tucked jump, 1/2 turn jump','Seat drop 1/2 turn','Supported falling log']},
+    12:{vault:['Squat through on 100cm vaulting table using springboard','Half jump turn from 1m vault with a good landing','Handstand flat back showing second flight (90cm mats) using springboard','One handstand pop (under-arm action)'],
+       bars:['Back hip circle with straight arms','Float swing from board without slider','Cast into tuck on, jump off with assistance','3 leg lifts to 45 degrees above horizontal'],
+       beam:['Handstand (high beam)','Cartwheel (floor beam)','Wolf jump (red foam beam)','Round-off dismount (high beam)'],
+       floor:['Backbend to bridge','Handstand (must hit vertical)','Hurdle jump into cartwheel','Straddle jump'],
+       prep:['8 kicks forwards, backwards and sideways on each leg','10 dish rocks','Box splits','5 tricep dips on parallel bars or a single low bar'],
+       rebound:['Tucked jump 1/1 turn jump','1/2 turn to seat drop','Back flick over barrel','Handspring supported']}},
+    routines:{floor:'Handstand forward roll, tuck jump, full turn spin, cartwheel, backward roll, cat leap, round-off',
+              vault:'Handstand flat back',
+              beam:'Any mount, cat leap, half spin, tuck jump, handstand, round-off dismount'}},
+  pink:  {name:'Book 2 · Pink', soon:true},
+  indigo:{name:'Book 4 · Indigo', soon:true}
+};
+const SEC_EQUIP = {
+  vault:  {label:'Vault', opts:[['full','Vault table + springboard'],['box','Box or stacked mats + springboard'],['none','No vault']]},
+  beam:   {label:'Beam', opts:[['beam','Beam (low or high)'],['bench','Bench instead of beam'],['line','Floor line or floor beam'],['none','Leave out']]},
+  bars:   {label:'Bars', opts:[['bars','Low bar or parallel bars'],['wall','Wall bars only'],['none','Leave out']]},
+  rebound:{label:'Rebound', opts:[['tramp','Trampette or mini-tramp'],['none','Leave out']]}
+};
+const SEC_ADAPT = {
+  'vault:box':'No vault table: use a box top or stacked mats (60cm) with the springboard, and mark table skills as adapted.',
+  'beam:bench':'Beam skills on a bench (flat or upturned). Mark the skill as adapted in the Awards Book.',
+  'beam:line':'Beam skills along a taped line or floor beam. Mark the skill as adapted in the Awards Book.',
+  'bars:wall':'Wall bars: hangs, swings, chin-ups and leg lifts. Replace cast and circle skills with front support holds on a bench, and mark them as adapted.'
+};
+const SEC_DEFAULTS = {book:'teal', level:9, lessons:6, mins:50, warm:8, cool:5, classSize:30, vault:'box', beam:'bench', bars:'none', rebound:'none'};
+let SEC = null;
+function secStart(){ return {...SEC_DEFAULTS, ...((S.club && S.club.secPlan) || {}), ...(SEC || {})}; }
+function secStations(p){
+  const st = ['floor'];
+  if(p.vault !== 'none') st.push('vault');
+  if(p.beam !== 'none') st.push('beam');
+  if(p.bars !== 'none') st.push('bars');
+  if(p.rebound !== 'none') st.push('rebound');
+  st.push('prep');
+  return st;
+}
+function secCalc(p){
+  const book = SEC_BOOKS[p.book], L = book.levels[p.level], st = secStations(p);
+  const N = Math.max(3, Math.min(15, Math.round(p.lessons) || 6));
+  const T = N - 2, rot = Math.max(3, Math.floor((p.mins - p.warm - p.cool) / st.length));
+  const group = Math.ceil((p.classSize || 0) / st.length);
+  const lessons = [];
+  for(let k = 1; k <= T; k++){
+    const a = Math.floor((k - 1) * 4 / T), b = Math.max(a + 1, Math.floor(k * 4 / T));
+    lessons.push({n:k, title: k === 1 ? 'Introduce the level' : (k === T ? 'Secure every skill' : 'Develop the skills'),
+      st: st.map(ap => ({ap, focus: L[ap].slice(a, b), recap: L[ap].slice(0, a)}))});
+  }
+  lessons.push({n:T + 1, title:'Performance routines', perf:true});
+  lessons.push({n:T + 2, title:'Assessment', assess:true});
+  const notes = ['vault','beam','bars'].map(k => SEC_ADAPT[k + ':' + p[k]]).filter(Boolean);
+  return {book, L, st, rot, group, lessons, notes};
+}
+function secLessonHTML(R, p, l){
+  const ch = ap => `<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:${SEC_APP[ap].col};color:#fff;font-size:12px;font-weight:800">${SEC_APP[ap].name}</span>`;
+  const time = `Warm-up ${p.warm} min · ${R.st.length} stations × ${R.rot} min · cool-down ${p.cool} min`;
+  let body;
+  if(l.perf){
+    body = `<p class="muted" style="margin:0 0 8px">Practise the Performance routines. They're the same routines used in the clubs' NGL Recreational competitions.</p>
+      <ul style="margin:0;padding-left:20px;line-height:1.6">${['floor','vault','beam'].filter(ap => ap === 'floor' || p[ap] !== 'none').map(ap => `<li><b>${SEC_APP[ap].name}:</b> ${esc(R.book.routines[ap])}</li>`).join('')}</ul>
+      <p class="note" style="margin:8px 0 0">Pupils not yet performing a routine work on any skill they haven't secured.</p>`;
+  }else if(l.assess){
+    body = `<p class="muted" style="margin:0">Rotate through the stations and assess each pupil on the Level ${p.level} skills. Sign off every skill shown in the pupil's Awards Book. A pupil who shows every skill has passed the level and gets their certificate; anything not passed is worked on again in the next block.</p>`;
+  }else{
+    body = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">${l.st.map(s => `<div style="background:var(--navy-2);border-radius:12px;padding:10px 12px">
+        ${ch(s.ap)}<ul style="margin:8px 0 0;padding-left:18px;line-height:1.45;font-size:14px">${s.focus.map(x => `<li><b>${esc(x)}</b></li>`).join('')}${s.recap.length ? `<li class="muted">Recap: ${esc(s.recap.join('; '))}</li>` : ''}</ul></div>`).join('')}</div>`;
+  }
+  return `<div class="card" style="margin:0 0 12px"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">
+      <h3 style="margin:0">Lesson ${l.n} · ${esc(l.title)}</h3><span class="note" style="margin:0">${l.assess || l.perf ? `${p.mins} min` : time}</span></div>
+      <div style="margin-top:10px">${body}</div></div>`;
+}
+function secOut(){
+  const p = secRead(); SEC = p;
+  const out = document.getElementById('sec_out'); if(!out) return;
+  const R = secCalc(p);
+  out.innerHTML = `<div class="card" style="margin:0 0 12px">
+      <h3 style="margin:0 0 6px">Level ${p.level} block: ${R.lessons.length} lessons</h3>
+      <p class="muted" style="margin:0">${R.st.length} stations: ${R.st.map(a => SEC_APP[a].name).join(', ')}. Groups of about ${R.group} pupils, ${R.rot} minutes at each station.</p>
+      ${R.notes.length ? `<ul style="margin:10px 0 0;padding-left:20px;line-height:1.5">${R.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+    </div>${R.lessons.map(l => secLessonHTML(R, p, l)).join('')}`;
+}
+function secRead(){
+  const p = {...SEC_DEFAULTS};
+  document.querySelectorAll('#sec_form [data-k]').forEach(el => {
+    const k = el.dataset.k;
+    p[k] = el.tagName === 'SELECT' && isNaN(el.value) ? el.value : (el.tagName === 'SELECT' ? +el.value : Math.max(0, parseFloat(el.value) || 0));
+  });
+  return p;
+}
+function secForm(p){
+  const sel = (k, label, opts) => `<div class="field"><label for="sec_${k}">${label}</label><select class="input" id="sec_${k}" data-k="${k}">${opts.map(([v, t]) => `<option value="${v}" ${String(p[k]) === String(v) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
+  const num = (k, label, note) => `<div class="field"><label for="sec_${k}">${label}</label><input class="input" id="sec_${k}" data-k="${k}" type="number" min="0" value="${esc(p[k])}">${note ? `<p class="note" style="margin:4px 0 0">${note}</p>` : ''}</div>`;
+  return `<div class="grid2">
+    <div class="card" style="margin:0">
+      <h3 style="margin:0 0 10px">1. The block</h3>
+      ${sel('book', 'Awards Book', Object.entries(SEC_BOOKS).map(([k, b]) => [k, b.name + (b.soon ? ' (coming soon)' : '')]).filter(([k]) => !SEC_BOOKS[k].soon))}
+      ${sel('level', 'Level', [9,10,11,12].map(n => [n, 'Level ' + n]))}
+      ${num('lessons', 'Lessons in the block', 'Includes a Performance routine lesson and an assessment lesson at the end.')}
+      ${num('mins', 'Lesson length (minutes)')}
+      ${num('warm', 'Warm-up (minutes)')}
+      ${num('cool', 'Cool-down (minutes)')}
+      ${num('classSize', 'Pupils in the class')}
+    </div>
+    <div class="card" style="margin:0">
+      <h3 style="margin:0 0 6px">2. Your school's equipment</h3>
+      <p class="note" style="margin:0 0 12px">Floor and physical prep run in every school. Tell us what else the school has and the plan adapts.</p>
+      ${Object.entries(SEC_EQUIP).map(([k, e]) => sel(k, e.label, e.opts)).join('')}
+    </div></div>`;
+}
+function screenSecondary(){
+  if(!schoolsLicensed()){
+    render(`<div class="card"><p class="eyebrow">NGL Schools Secondary · Lesson planner</p>
+      <h2 style="margin:0 0 6px">Plan secondary school lessons in minutes</h2>
+      <p class="muted" style="margin:0">The Secondary lesson planner builds a full block of PE lessons from the NGL Schools Secondary Awards Books, adapted to the equipment each school has. It opens with your Schools Club Licence.</p>
+      <div class="btn-row" style="margin-top:14px"><button class="btn small" data-tab="dashboard">Go to your licence</button><button class="btn ghost small" data-tab="programme">See programme &amp; pricing</button></div></div>`);
+    return;
+  }
+  const p = secStart();
+  render(`<div class="card">
+      <p class="eyebrow">NGL Schools Secondary · Lesson planner</p>
+      <h2 style="margin:0 0 6px">Your secondary lesson plan</h2>
+      <p class="muted" style="margin:0">Choose the level and tell us what equipment the school has. The planner builds a block of lessons from the Awards Book skills, ending with the Performance routines and an assessment. Levels aren't tied to a school year, so run as many blocks as each class needs.</p>
+      <div class="btn-row" style="margin-top:14px"><button class="btn small" data-act="sec-save">Save my settings</button><button class="btn ghost small" data-act="sec-print">Print or save as PDF</button><button class="btn ghost small" data-act="sec-reset">Reset</button></div>
+      <p class="note" id="sec_msg" style="margin:8px 0 0;min-height:1em"></p>
+    </div>
+    <div id="sec_form">${secForm(p)}</div>
+    <div id="sec_out" style="margin-top:16px"></div>`);
+  document.querySelectorAll('#sec_form [data-k]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', secOut));
+  secOut();
+}
+function secPrintHTML(p){
+  const R = secCalc(p);
+  const rows = R.lessons.map(l => {
+    let d;
+    if(l.perf) d = ['floor','vault','beam'].filter(ap => ap === 'floor' || p[ap] !== 'none').map(ap => `<b>${SEC_APP[ap].name}:</b> ${esc(R.book.routines[ap])}`).join('<br>');
+    else if(l.assess) d = `Assess and sign off the Level ${p.level} skills in each pupil's Awards Book. Every skill shown = level passed and certificate awarded.`;
+    else d = l.st.map(s => `<b>${SEC_APP[s.ap].name}:</b> ${esc(s.focus.join('; '))}${s.recap.length ? ` <span class="inv-sub">(recap: ${esc(s.recap.join('; '))})</span>` : ''}`).join('<br>');
+    return `<tr><td style="white-space:nowrap"><b>Lesson ${l.n}</b><div class="inv-sub">${esc(l.title)}</div></td><td>${d}</td></tr>`;
+  }).join('');
+  return `<div class="inv"><div class="inv-top"><div><div class="inv-h" style="font-size:22px">NGL SCHOOLS SECONDARY · LEVEL ${p.level}</div>
+      <div class="inv-sub">${esc(R.book.name)} · ${esc(S.club.name || '')} · ${new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'})}</div></div></div>
+    <p class="inv-sub">${p.mins}-minute lessons: warm-up ${p.warm} min, ${R.st.length} stations × ${R.rot} min (${R.st.map(a => SEC_APP[a].name).join(', ')}), cool-down ${p.cool} min. Groups of about ${R.group}.</p>
+    ${R.notes.length ? `<p class="inv-sub">${R.notes.map(esc).join('<br>')}</p>` : ''}
+    <table class="inv-table"><tbody>${rows}</tbody></table>
+    <div class="inv-foot">National Gymnastics League · NGL Schools Secondary · For licensed NGL clubs and their schools</div></div>`;
+}
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-act^="sec-"]'); if(!t) return;
+  const a = t.dataset.act, msg = document.getElementById('sec_msg');
+  if(a === 'sec-save'){
+    const p = secRead();
+    try{ await api.updateClub({secPlan:p}); if(msg){ msg.style.color = 'var(--ok)'; msg.textContent = '✓ Saved. Your settings will be here next time.'; } }
+    catch(err){ console.error(err); if(msg) msg.textContent = 'Couldn’t save just now. Please try again.'; }
+  }else if(a === 'sec-reset'){
+    SEC = {...SEC_DEFAULTS};
+    document.getElementById('sec_form').innerHTML = secForm(SEC);
+    document.querySelectorAll('#sec_form [data-k]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', secOut));
+    secOut(); if(msg){ msg.style.color = ''; msg.textContent = 'Reset. Press Save to keep these settings.'; }
+  }else if(a === 'sec-print'){
+    document.getElementById('print-area').innerHTML = secPrintHTML(secRead());
+    window.print();
+  }
+});
+
 function show(){
   setTop();
   if(!signedIn) return ADMIN_MODE ? screenLogin() : screenLanding();
   if(ADMIN_MODE){ if(S.isAdmin) screenAdmin(); else render('<div class="card"><h2>NGL admins only</h2><p class="muted">This login isn’t an NGL admin account.</p></div>'); window.scrollTo(0,0); return; }
   if(tab === 'admin' || !S.club){ if(!S.club){ render('<div class="card"><h2>No club on this login</h2><p class="muted">NGL admin has moved to the main NGL Admin app (Awards licences).</p></div>'); window.scrollTo(0,0); return; } tab = 'dashboard'; }
-  ({dashboard:screenDashboard, orders:screenOrders, planner:screenPlanner, programme:screenProgramme})[tab]();
+  ({dashboard:screenDashboard, orders:screenOrders, planner:screenPlanner, secondary:screenSecondary, programme:screenProgramme})[tab]();
   window.scrollTo(0,0);
 }
 
@@ -3849,9 +4055,11 @@ async function screenAdmin(){
 
 
 /* ---------- Graduation events ---------- */
-const GRAD_FAMILY_PRICE = 12;   // what families pay the club per gymnast, including one spectator
-const GRAD_EXTRA_SPECTATOR = 6; // each extra spectator; the club keeps all of it
-const GRAD_NGL_FEE = 5;         // what NGL invoices the club per graduate (medal included)
+const GRAD_FAMILY_PRICE = 12;   // what families pay the club per gymnast, including one spectator (VAT included)
+const GRAD_EXTRA_SPECTATOR = 6; // what families pay for each extra spectator (VAT included); all of it goes to NGL
+const GRAD_NGL_FEE = 5;         // what NGL invoices the club per graduate, + VAT (medal included)
+const GRAD_NGL_SPECTATOR = 5;   // what NGL invoices the club per extra spectator, + VAT
+const GRAD_CLUB_KEEPS = 5;      // the club's share of each £12 ticket, after VAT and NGL's fee
 const isLicence = o => (o.type || 'licence') === 'licence';
 function evDateText(ev){
   if(!ev.date) return '';
@@ -3869,20 +4077,25 @@ function medalsModal(ev){
     <p class="muted">${esc(ev.title || 'NGL Schools Graduation')} · ${esc(evDateText(ev))}</p>
     <form id="mf">
       <div class="field"><label for="mq">How many gymnasts are graduating?</label><input class="input" id="mq" type="number" min="1" max="2000" value="20" required></div>
+      <div class="field"><label for="ms">How many extra spectator tickets have you sold?</label><input class="input" id="ms" type="number" min="0" max="10000" value="20"><p class="note" style="margin:4px 0 0">Families pay £${GRAD_EXTRA_SPECTATOR} for each spectator beyond the one included. All of it goes to NGL.</p></div>
       ${already ? `<p class="note">You’ve already ordered ${already} medals for this Graduation. Order extra here if more gymnasts have booked.</p>` : ''}
       <div id="msum"></div>
-      <p class="note">Each graduate’s £${GRAD_FAMILY_PRICE} (including one spectator): your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE}, NGL invoices £${GRAD_NGL_FEE} including the medal. Extra spectators at £${GRAD_EXTRA_SPECTATOR} are all yours. Medals are sent once payment is received.</p>
+      <p class="note">Of each £${GRAD_FAMILY_PRICE} ticket (gymnast and one spectator), £2 is VAT, your club keeps £${GRAD_CLUB_KEEPS} and NGL invoices £${GRAD_NGL_FEE} + VAT, including the medal. Extra spectator tickets are invoiced at £${GRAD_NGL_SPECTATOR} + VAT each. Medals are sent once payment is received.</p>
       <div class="btn-row" style="margin-top:12px"><button class="btn" type="submit">Place order</button><button class="btn ghost" type="button" data-close>Cancel</button></div>
     </form>`);
-  const q = m.querySelector('#mq');
-  const upd = () => { const n = Math.max(0, parseInt(q.value || '0', 10));
-    m.querySelector('#msum').innerHTML = `<div class="sum"><span>${n} × ${gbp(GRAD_NGL_FEE)} (medal &amp; place)</span><span></span></div><div class="sum total"><span>Total</span><span>${gbp(n * GRAD_NGL_FEE)}</span></div>`; };
-  q.addEventListener('input', upd); upd();
+  const q = m.querySelector('#mq'), qs = m.querySelector('#ms');
+  const upd = () => { const n = Math.max(0, parseInt(q.value || '0', 10)), s = Math.max(0, parseInt(qs.value || '0', 10));
+    const net = n * GRAD_NGL_FEE + s * GRAD_NGL_SPECTATOR, vat = Math.round(net * VAT_RATE * 100) / 100;
+    m.querySelector('#msum').innerHTML = `<div class="sum"><span>${n} graduates × ${gbp(GRAD_NGL_FEE)} (medal &amp; place)</span><span>${gbp(n * GRAD_NGL_FEE)}</span></div>`
+      + (s ? `<div class="sum"><span>${s} extra spectators × ${gbp(GRAD_NGL_SPECTATOR)}</span><span>${gbp(s * GRAD_NGL_SPECTATOR)}</span></div>` : '')
+      + (vat ? `<div class="sum"><span>VAT at ${Math.round(VAT_RATE * 100)}%</span><span>${gbp(vat)}</span></div>` : '')
+      + `<div class="sum total"><span>Total</span><span>${gbp(net + vat)}</span></div>`; };
+  q.addEventListener('input', upd); qs.addEventListener('input', upd); upd();
   m.querySelector('#mf').addEventListener('submit', async e => {
     e.preventDefault();
-    const n = parseInt(q.value, 10); if(!(n > 0)) return;
+    const n = parseInt(q.value, 10), s = Math.max(0, parseInt(qs.value || '0', 10)); if(!(n > 0)) return;
     const sb = m.querySelector('button[type=submit]'); sb.disabled = true; sb.textContent = 'Placing order…';
-    let o; try{ o = await api.orderGraduation(ev, n); }
+    let o; try{ o = await api.orderGraduation(ev, n, s); }
     catch(err){ console.error(err); sb.disabled = false; sb.textContent = 'Place order'; m.querySelector('#msum').insertAdjacentHTML('beforeend','<p class="error">Couldn’t place the order. Please try again.</p>'); return; }
     m.remove(); show(); showInvoice(o, S.club);
     const note = document.getElementById('invMailNote');
@@ -3992,7 +4205,7 @@ function gradModal(ev){
         <div class="field"><label for="gtm">Start time</label><input class="input" id="gtm" type="time" value="${esc(ev.time || '10:00')}"></div>
       </div>
       <div class="field"><label for="gv">Venue</label><input class="input" id="gv" value="${esc(ev.venue || S.club.name || '')}" placeholder="e.g. SAADI Gymnastics, Harpenden" required></div>
-      <div class="grad-fee"><b>Families pay £${GRAD_FAMILY_PRICE} per gymnast, including one spectator.</b> Extra spectators are £${GRAD_EXTRA_SPECTATOR} each. Your club keeps £${GRAD_FAMILY_PRICE - GRAD_NGL_FEE} per gymnast and all the extra spectator money; NGL invoices your club £${GRAD_NGL_FEE} per graduate, including the exclusive NGL Graduation Medal.</div>
+      <div class="grad-fee"><b>Families pay £${GRAD_FAMILY_PRICE} per gymnast, including one spectator.</b> Extra spectators are £${GRAD_EXTRA_SPECTATOR} each. Of each £${GRAD_FAMILY_PRICE}, £2 is VAT, your club keeps £${GRAD_CLUB_KEEPS}, and NGL invoices £${GRAD_NGL_FEE} + VAT including the exclusive NGL Graduation Medal. Extra spectator money goes to NGL (£${GRAD_NGL_SPECTATOR} + VAT each).</div>
       <div class="field"><label for="gb">How families book (optional link)</label><input class="input" id="gb" type="url" value="${esc(ev.bookingUrl || '')}" placeholder="https://… your club’s booking page"></div>
       <div class="field"><label for="gn">Extra information for families (optional)</label><input class="input" id="gn" value="${esc(ev.notes || '')}" placeholder="e.g. Arrive 30 minutes early, wear your NGL T-shirt"></div>
       <p class="error" id="gErr"></p>
