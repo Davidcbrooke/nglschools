@@ -2654,6 +2654,13 @@ function licState(club, orders, now = new Date()){
   return {key: pending ? 'awaiting' : 'none', band: lic ? bandOf(lic.band) : null, pending};
 }
 const licActive = () => licState(S.club, S.orders).key === 'active';
+/* Family code access: off | live | trial | trial-ended. A trial switches the family code on until a date
+   set by NGL admin (no licence, so no ordering); a paid Club Licence replaces it. */
+function codeAccess(club, now = new Date()){
+  if(!club || !club.codeActive) return {key:'off'};
+  if(club.codeTrialUntil){ const until = toDate(club.codeTrialUntil); return {key: until > now ? 'trial' : 'trial-ended', until}; }
+  return {key:'live'};
+}
 /* Band from children: the total across the club's schools (numbers only) sets the band. */
 const bandIndex = k => SCHOOLS_BANDS.findIndex(b => b.key === k);
 const bandForCount = n => SCHOOLS_BANDS.find(b => b.max == null || n <= b.max);
@@ -2785,7 +2792,7 @@ async function syncChildren(){
   const n = childrenTotal();
   if(S.club && S.club.schoolsChildren !== n){ await api.updateClub({schoolsChildren:n}).catch(e => console.error(e)); S.club.schoolsChildren = n; }
 }
-async function claimNewCode(clubName, active, clubId){
+async function claimNewCode(clubName, active, clubId, expires){
   clubId = clubId || S.uid;
   const {fs, D} = await fb();
   for(let i = 0; i < 6; i++){
@@ -2793,7 +2800,7 @@ async function claimNewCode(clubName, active, clubId){
     const ref = fs.doc(D, 'accessCodes', code);
     const snap = await fs.getDoc(ref);
     if(snap.exists()) continue;
-    const licExp = (clubId === S.uid && S.club && S.club.schools && S.club.schools.expires) || null;
+    const licExp = expires !== undefined ? expires : ((clubId === S.uid && S.club && (S.club.codeTrialUntil || (S.club.schools && S.club.schools.expires))) || null);
     await fs.setDoc(ref, {clubId, clubName, season:S.season, ...(licExp ? {expires:licExp} : {}), status: active ? 'active' : 'inactive', createdAt: fs.serverTimestamp()});
     return code;
   }
@@ -2894,7 +2901,7 @@ const liveApi = {
     const {fs, D} = await fb();
     const upd = {...d};
     if(regenerate){
-      const code = await claimNewCode(d.name || club.name, !!club.codeActive, club.id);
+      const code = await claimNewCode(d.name || club.name, !!club.codeActive, club.id, club.codeTrialUntil || (club.schools && club.schools.expires) || null);
       upd.accessCode = code;
       if(club.accessCode) await fs.deleteDoc(fs.doc(D, 'accessCodes', club.accessCode)).catch(() => {});
     }else if(d.name && club.accessCode){
@@ -2902,6 +2909,29 @@ const liveApi = {
     }
     await fs.updateDoc(fs.doc(D, 'clubs', club.id), upd);
     if(club.id === S.uid) Object.assign(S.club, upd);
+  },
+  // Family code access, set by NGL admin. mode: 'trial' (days), 'off', 'on' (until the licence ends, or no end date)
+  async adminSetAccess(club, mode, days){
+    const {fs, D} = await fb();
+    const batch = fs.writeBatch(D);
+    const clubRef = fs.doc(D, 'clubs', club.id);
+    const codeRef = club.accessCode ? fs.doc(D, 'accessCodes', club.accessCode) : null;
+    let upd;
+    if(mode === 'trial'){
+      const until = new Date(); until.setDate(until.getDate() + days); until.setHours(23, 59, 0, 0);
+      const ts = fs.Timestamp.fromDate(until);
+      upd = {codeActive:true, codeTrialUntil:ts};
+      if(codeRef) batch.update(codeRef, {status:'active', expires:ts});
+    }else if(mode === 'off'){
+      upd = {codeActive:false, codeTrialUntil:fs.deleteField()};
+      if(codeRef) batch.update(codeRef, {status:'inactive'});
+    }else{
+      const licExp = club.schools && club.schools.status === 'active' && club.schools.expires ? club.schools.expires : null;
+      upd = {codeActive:true, codeTrialUntil:fs.deleteField()};
+      if(codeRef) batch.update(codeRef, {status:'active', expires: licExp || fs.deleteField()});
+    }
+    batch.update(clubRef, upd);
+    await batch.commit();
   },
   async adminLoad(){
     const {fs, D} = await fb();
@@ -2919,7 +2949,7 @@ const liveApi = {
     if(order.type === 'club-licence' && (order.kind === 'start' || order.kind === 'renew')){
       // Licence on for 12 months (a renewal paid early starts when the current year ends); family code on
       const expires = fs.Timestamp.fromDate(licenceExpiry(club.schools));
-      batch.update(clubRef, {schools:{status:'active', band:order.band, season:order.season || S.season, expires, activatedAt:fs.serverTimestamp()}, codeActive:true});
+      batch.update(clubRef, {schools:{status:'active', band:order.band, season:order.season || S.season, expires, activatedAt:fs.serverTimestamp()}, codeActive:true, codeTrialUntil:fs.deleteField()});
       if(club.accessCode) batch.update(fs.doc(D, 'accessCodes', club.accessCode), {status:'active', season:order.season || S.season, expires});
     }else if(order.upgradeTo && club.schools){
       batch.update(clubRef, {schools:{...club.schools, band:order.upgradeTo}});
@@ -2971,10 +3001,14 @@ const demoApi = {
   async saveEvent(id, d){ if(id) Object.assign(S.events.find(e => e.id === id), d); else S.events.push({id:'ev' + Date.now(), ...d}); },
   async deleteEvent(id){ S.events = S.events.filter(e => e.id !== id); },
   async adminUpdateClub(club, d, regenerate){ Object.assign(S.club, d); if(regenerate) S.club.accessCode = newAccessCode(S.club.name); },
+  async adminSetAccess(club, mode, days){
+    if(mode === 'trial'){ const u = new Date(); u.setDate(u.getDate() + days); u.setHours(23, 59, 0, 0); Object.assign(S.club, {codeActive:true, codeTrialUntil:u}); }
+    else { S.club.codeActive = mode !== 'off'; delete S.club.codeTrialUntil; }
+  },
   async adminLoad(){ return {clubs:[{id:'demo', ...S.club}], orders:S.orders.slice().reverse()}; },
   async adminMarkPaid(order, club){
     const o = S.orders.find(x => x.id === order.id); if(o) o.status = 'paid';
-    if(order.type === 'club-licence' && (order.kind === 'start' || order.kind === 'renew')){ S.club.schools = {status:'active', band:order.band, season:S.season, expires:licenceExpiry(S.club.schools)}; S.club.codeActive = true; }
+    if(order.type === 'club-licence' && (order.kind === 'start' || order.kind === 'renew')){ S.club.schools = {status:'active', band:order.band, season:S.season, expires:licenceExpiry(S.club.schools)}; S.club.codeActive = true; delete S.club.codeTrialUntil; }
     else if(order.upgradeTo && S.club.schools) S.club.schools = {...S.club.schools, band:order.upgradeTo};
   },
   async adminSetBand(clubId, season, price){ S.club.bands[season] = price; }
@@ -3236,7 +3270,7 @@ function screenRegisterLegacy(){
 }
 
 /* ---------- Signed-in screens ---------- */
-function codeLive(){ return !!S.club.codeActive; }
+function codeLive(){ const k = codeAccess(S.club).key; return k === 'live' || k === 'trial'; }
 function hubLink(){ return PARENT_HUB_URL + '?code=' + encodeURIComponent(S.club.accessCode); }
 
 function clubDetailsHTML(){
@@ -3247,6 +3281,26 @@ function clubDetailsHTML(){
       <button class="btn ghost small" data-act="edit-club">Edit details</button>
     </div></div>`;
 }
+function accessBoxHTML(club){
+  const a = codeAccess(club), lic = licState(club, []);
+  const now = a.key === 'trial' ? `On a free trial until <b>${fmtDate(a.until)}</b>.`
+    : a.key === 'trial-ended' ? `Free trial ended on ${fmtDate(a.until)}. The family code no longer works.`
+    : a.key === 'live' ? (lic.key === 'active' ? `Live with their Club Licence, to ${fmtDate(lic.exp)}.` : 'Live, with no end date.')
+    : 'Off. Families can’t use the code.';
+  const licOn = lic.key === 'active';
+  return `<div class="field" style="border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:12px 14px;margin:6px 0 14px">
+    <label>Family code access</label>
+    <p class="note" style="margin:0 0 10px">${now}</p>
+    ${licOn ? '' : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <button class="btn small" type="button" data-access="trial">Free trial for</button>
+      <input class="input" id="etd" type="number" min="1" max="90" value="7" style="width:72px;padding:8px"> <span class="note">days</span></div>`}
+    <div class="btn-row">
+      ${a.key === 'off' || a.key === 'trial-ended' || a.key === 'trial' ? `<button class="btn ghost small" type="button" data-access="on">${licOn ? 'Switch back on (to licence end)' : 'Switch on, no end date'}</button>` : ''}
+      ${a.key !== 'off' ? '<button class="btn ghost small" type="button" data-access="off">Switch off now</button>' : ''}
+    </div>
+    <p class="note" style="margin:8px 0 0">A trial switches on the family code only. The club can’t order until they’ve paid for a Club Licence, which replaces the trial.</p>
+  </div>`;
+}
 function editClubModal(club, isAdminEdit){
   const m = modal(`<h2>${isAdminEdit ? 'Edit club' : 'Edit club details'}</h2>
     <form id="ecf">
@@ -3254,6 +3308,7 @@ function editClubModal(club, isAdminEdit){
       <div class="field"><label for="ebg">British Gymnastics club number</label><input class="input" id="ebg" value="${esc(club.bgNumber || '')}"></div>
       <div class="field"><label for="ect">Main contact name</label><input class="input" id="ect" value="${esc(club.contact || '')}" required></div>
       ${isAdminEdit ? `<div class="field"><label for="eem">Contact email (for invoices)</label><input class="input" id="eem" type="email" value="${esc(club.email || '')}"></div>` : ''}
+      ${isAdminEdit ? accessBoxHTML(club) : ''}
       <label class="note" style="display:flex;gap:10px;align-items:flex-start;margin:4px 0 6px"><input type="checkbox" id="eregen" style="margin-top:3px"> Also give the club a new Hub code based on this name</label>
       <p class="note" id="eregenNote" style="margin:0 0 14px">Current code: <b class="mono">${esc(club.accessCode || '')}</b>. Only change it if the old code hasn’t been shared with families yet, because the old code stops working.</p>
       <p class="error" id="ecErr"></p>
@@ -3261,6 +3316,12 @@ function editClubModal(club, isAdminEdit){
     </form>`);
   const nameIn = m.querySelector('#ecn');
   const regen = m.querySelector('#eregen');
+  m.querySelectorAll('[data-access]').forEach(b => b.addEventListener('click', async () => {
+    const mode = b.dataset.access, days = Math.max(1, Math.min(90, parseInt(m.querySelector('#etd')?.value, 10) || 7));
+    m.querySelectorAll('[data-access]').forEach(x => x.disabled = true); b.textContent = 'Saving…';
+    try{ await api.adminSetAccess(club, mode, days); m.remove(); screenAdmin(); }
+    catch(err){ console.error(err); m.querySelector('#ecErr').textContent = 'Couldn’t change access. Please try again.'; m.querySelectorAll('[data-access]').forEach(x => x.disabled = false); b.textContent = 'Try again'; }
+  }));
   const tick = () => { if(codePrefix(nameIn.value) !== String(club.accessCode || '').split('-')[0]) regen.checked = true; };
   nameIn.addEventListener('input', tick);
   m.querySelector('#ecf').addEventListener('submit', async e => {
@@ -3294,7 +3355,7 @@ function codeCardHTML(){
         <div>
           <p class="eyebrow">Your NGL Schools family app code</p>
           <div class="club-code mono">${esc(S.club.accessCode)}</div>
-          <p style="margin:8px 0 0">${live ? '<span class="tag ok">Live</span>' : '<span class="tag wait">Goes live when your first licence payment is confirmed</span>'}</p>
+          <p style="margin:8px 0 0">${codeAccess(S.club).key === 'trial' ? `<span class="tag ok">Free trial · live until ${fmtDate(codeAccess(S.club).until)}</span>` : live ? '<span class="tag ok">Live</span>' : codeAccess(S.club).key === 'trial-ended' ? '<span class="tag wait">Free trial ended · goes live again when your licence payment is confirmed</span>' : '<span class="tag wait">Goes live when your first licence payment is confirmed</span>'}</p>
           <p class="muted" style="margin:12px 0 14px">Share this one code with all your Schools families, for example in your welcome letter, class WhatsApp or newsletter. Parents enter it in the Schools family app to see the routines, videos and events.</p>
           <div class="btn-row">
             <button class="btn small" data-act="copy-msg">Copy message for parents</button>
@@ -4036,7 +4097,7 @@ async function screenAdmin(){
             : st.key === 'expired' ? `<span class="tag wait">Expired</span><div class="note">${fmtDate(st.exp)}</div>`
             : st.key === 'awaiting' ? '<span class="tag wait">Awaiting payment</span>' : '<span class="muted">None</span>';
           return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.bgNumber||'')}</td><td>${esc(c.contact||'')}<div class="note">${esc(c.email||'')}</div></td>
-            <td class="mono">${esc(c.accessCode||'')} ${c.codeActive ? '<span class="tag ok">Live</span>' : '<span class="tag wait">Off</span>'}</td>
+            <td class="mono">${esc(c.accessCode||'')} ${accessTag(c)}</td>
             <td>${lic}</td>
             <td class="num">${c.schoolsChildren == null ? '<span class="muted">—</span>' : c.schoolsChildren}${st.key === 'active' && c.schoolsChildren != null && st.band && bandIndex(bandForCount(c.schoolsChildren).key) > bandIndex(st.band.key) ? '<div><span class="tag wait">Over band</span></div>' : ''}</td>
             <td class="num"><button class="btn ghost small" data-act="adm-edit-club" data-club="${esc(c.id)}">Edit</button></td></tr>`;
@@ -4053,6 +4114,14 @@ async function screenAdmin(){
     </div>`);
 }
 
+
+function accessTag(c){
+  const a = codeAccess(c), short = d => d.toLocaleDateString('en-GB', {day:'numeric', month:'short'});
+  return a.key === 'live' ? '<span class="tag ok">Live</span>'
+    : a.key === 'trial' ? `<span class="tag ok">Trial</span><div class="note" style="font-family:inherit">to ${short(a.until)}</div>`
+    : a.key === 'trial-ended' ? `<span class="tag wait">Trial ended</span><div class="note" style="font-family:inherit">${short(a.until)}</div>`
+    : '<span class="tag wait">Off</span>';
+}
 
 /* ---------- Graduation events ---------- */
 const GRAD_FAMILY_PRICE = 12;   // what families pay the club per gymnast, including one spectator (VAT included)
