@@ -4174,7 +4174,7 @@ function suppliesModal(){
 
 function orderPlaced(m, o, extra){
   m.querySelector('.modal').innerHTML = `<h2>Order ${esc(o.id)} placed</h2>
-    <p class="muted">${gbp(orderTotal(o))}. Pay by bank transfer within ${INVOICE.termsDays} days quoting <b class="mono">${esc(o.id)}</b>. ${esc(extra)}</p>
+    <p class="muted">${gbp(orderTotal(o))}. Pay now by card using the button below, or by bank transfer within ${INVOICE.termsDays} days quoting <b class="mono">${esc(o.id)}</b>. ${esc(extra)}</p>
     <div class="btn-row"><button class="btn" data-act="invoice" data-order="${esc(o.id)}">View invoice</button><button class="btn ghost" data-close>Done</button></div>
     <p class="note" id="mailNote" style="margin:12px 0 0">${FIREBASE_CONFIG ? 'Emailing your invoice to ' + esc(S.club.email || '') + '…' : 'Preview mode: no email sent.'}</p>`;
   m.querySelector('[data-close]').addEventListener('click', () => show());
