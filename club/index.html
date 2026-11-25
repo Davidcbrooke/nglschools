@@ -4732,5 +4732,9 @@ const BOOK_COVER = '/9j/4AAQSkZJRgABAQIAOwA7AAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcH
   }, {passive:true});
 })();
 </script>
+<script>/* NGL card payments (kit/card-pay.js) */
+if(FIREBASE_CONFIG) window.NGL_PAY={coll:()=>'orders',status:id=>{const o=(S.orders||[]).find(o=>o.id===id);return o?(o.status||'awaiting-payment'):null},uid:()=>S.uid,token:async()=>{const f=await fb();return f.A.currentUser&&f.A.currentUser.getIdToken();}};
+</script>
+<script src="https://club.nationalgymnasticsleague.co.uk/kit/card-pay.js"></script>
 </body>
 </html>
